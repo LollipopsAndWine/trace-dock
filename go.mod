@@ -11,6 +11,7 @@ require (
 	github.com/sassoftware/go-rpmutils v0.4.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -58,6 +59,5 @@ require (
 	golang.org/x/time v0.4.0 // indirect
 	golang.org/x/tools v0.23.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.1 // indirect
 )

@@ -49,7 +49,7 @@ make release
 
 打包前编辑 `release.json` 的 `version` 和 `default_server_url`，也可填写原生包的 `maintainer` 和 `license`（默认分别为 `Trace Dock maintainers`、`UNLICENSED`，不表示授予开源许可）。本地 `make release` 成功后自动递增 patch 版本，例如构建 `0.1.0` 后文件变为 `0.1.1`；设置 `auto_increment_patch` 为 `false` 可关闭自动递增。生成五个平台的裸二进制、Linux `.deb/.rpm`、macOS `.pkg`、Linux/macOS `.tar.gz`、Windows `.zip`、`dist/RELEASE.json` 和 `dist/SHA256SUMS`；全部使用 `CGO_ENABLED=0`。
 
-Gitee Go 配置在 [.workflow/trace-dock-release.yml](.workflow/trace-dock-release.yml)。启用流水线后推送 `vX.Y.Z` 标签，会依次测试、构建、生成原生安装包和便携压缩包、校验并上传 Gitee Release。CI 版本取标签，不自动递增 `release.json`。当前使用私有 Gitee 实例，首次需在控制台导入 YAML 并配置执行环境和 Release 权限，具体见 [Gitee-CI-发布.md](docs/Gitee-CI-发布.md)。
+GitHub Actions 配置在 [.github/workflows/release.yml](.github/workflows/release.yml)。推送 `vX.Y.Z` 标签后，GitHub Actions 会自动测试、构建原生安装包和便携压缩包、发布 npm 包，并创建 GitHub Release。CI 版本取 Git tag，不自动递增 `release.json`。首次发布前，在 GitHub 仓库 Secrets 中配置 `NPM_TOKEN`；详细设置见 [GitHub 发布说明](docs/GitHub-CI-发布.md)。
 
 | 设置 | 默认值 |
 | --- | --- |

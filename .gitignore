@@ -6,5 +6,4 @@ dist/
 .env
 *.test
 coverage.out
-GITEE_PARAMS
 .trace-dock/

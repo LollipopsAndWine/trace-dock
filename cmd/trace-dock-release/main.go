@@ -175,20 +175,6 @@ func run(ci bool) error {
 		return err
 	}
 	if ci {
-		// Gitee Go reads this file after the build step and exports these parameters
-		// to subsequent stages. No undocumented tag environment variable is needed.
-		params, err := os.OpenFile("GITEE_PARAMS", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-		if err != nil {
-			return err
-		}
-		_, writeErr := fmt.Fprintf(params, "TRACE_DOCK_RELEASE_TAG=%s\n", tag)
-		closeErr := params.Close()
-		if writeErr != nil {
-			return writeErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
 		fmt.Printf("Built release %s from %s; release.json unchanged\n", tag, commit)
 	} else if cfg.AutoIncrementPatch {
 		// Preserve any extra release configuration fields while updating the version.
@@ -238,7 +224,7 @@ func selectReleaseTag(output string) (string, error) {
 		}
 	}
 	if len(tags) != 1 {
-		return "", fmt.Errorf("CI requires exactly one vX.Y.Z tag at HEAD (found %d); enable tag checkout/fetch in Gitee Go", len(tags))
+		return "", fmt.Errorf("CI requires exactly one vX.Y.Z tag at HEAD (found %d); ensure checkout fetches tags", len(tags))
 	}
 	return tags[0], nil
 }

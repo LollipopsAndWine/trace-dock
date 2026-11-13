@@ -1,4 +1,4 @@
-trace-dock CLI 发行版由 Gitee Go 构建并校验。
+trace-dock CLI 发行版由 GitHub Actions 构建并校验。
 
 附件中的 `RELEASE.json` 记录本次版本、Git 标签、源码提交和默认服务地址；`SHA256SUMS` 覆盖全部二进制、原生安装包、压缩包和版本记录。
 
@@ -18,4 +18,4 @@ Ubuntu/Debian 执行 `sudo apt install ./trace-dock-linux-amd64.deb`；Fedora/RH
 
 更改默认服务地址可使用 `trace-dock --server https://你的服务域名`，或编辑用户目录内的 `config.json`。便携安装卸载使用 `trace-dock uninstall`；通过 deb/rpm 安装时，使用 `sudo apt remove trace-dock` / `sudo dnf remove trace-dock` 维护系统包记录，用户配置和任务数据予以保留。
 
-Node.js/npm 用户也可以直接执行 `npm install -g @trace-dock/cli`。npm 包会按当前平台选择一个原生 Go 二进制，npm 用户不需要安装 Go 或 Python；不要使用 `--omit=optional`，否则平台二进制不会安装。
+Node.js/npm 用户也可以执行 `npm install -g @pjlab/trace-dock` 安装。npm 包会按当前平台选择一个原生 Go 二进制；不要使用 `--omit=optional`，否则平台二进制不会安装。

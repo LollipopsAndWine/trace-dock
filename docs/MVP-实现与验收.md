@@ -17,6 +17,6 @@ workspace 使用项目证据、所有者与路径边界进行保守分类，不�
 
 系统预装 Go 1.27.4 的标准库含冲突文件，项目的 Makefile 与跨平台发布工具固定使用独立的 Go 1.26.5 工具链，未修改系统 Go。纯 Go macOS 安装包库要求该版本。首次执行会由 Go 自动下载工具链；已缓存后可直接复用。`GOTOOLCHAIN` 可显式覆盖为兼容版本。
 
-上线前仍需提供生产域名、预登记身份、PostgreSQL、OSS bucket/RAM role 和两台 API 节点，执行真实 STS 直传、跨节点幂等/故障切换，以及 macOS、Windows 原生完整交互验收。CI 使用 Gitee Go 在 Linux 上测试和交叉编译，原 GitHub Actions 配置已移除；交叉编译与解包检查不能代替原生安装运行验证。macOS pkg 的签名和公证仍待配置。
+上线前仍需提供生产域名、预登记身份、PostgreSQL、OSS bucket/RAM role 和两台 API 节点，执行真实 STS 直传、跨节点幂等/故障切换，以及 macOS、Windows 原生完整交互验收。CI 使用 GitHub Actions 在 Linux 上测试和交叉编译；交叉编译与解包检查不能代替原生安装运行验证。macOS pkg 的签名和公证仍待配置。
 
 本版不自动生成题目或倒推目录。Codex 缺少起点基线时只归档；Claude 的 Edit old/new 证据仅能成为候选，Write 覆盖或未证明的 shell/工具写操作保持 unknown/archive_only；compacted、损坏或异常终止不计为有效候选。所有未经异机文件树比对的会话 `reconstructable_count=0`。执行 `make acceptance MANIFEST=/path/to/manifest.json` 可从 manifest 复核统计；同时提供 `BASELINE`、`RESTORED`、`SESSION` 时，会在异机比较人工独立恢复结果与可信起始基线，输出验证证据，不改写原始 manifest。没有可信基线时，不能宣布可重建验收通过。

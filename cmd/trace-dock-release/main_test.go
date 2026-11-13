@@ -5,9 +5,12 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"fmt"
+	"gopkg.in/yaml.v3"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -122,4 +125,73 @@ func TestReleaseVersionIncrementAndURLValidation(t *testing.T) {
 	if err := validateConfig(releaseConfig{Version: "1.2.3", DefaultServerURL: "https://collector.example.com"}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestGitHubReleaseWorkflow(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow map[string]any
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatalf("invalid GitHub Actions YAML: %v", err)
+	}
+	permissions := asYAMLMap(workflow["permissions"])
+	if permissions["contents"] != "write" {
+		t.Fatal("release workflow needs contents: write")
+	}
+	on := asYAMLMap(workflow["on"])
+	push := asYAMLMap(on["push"])
+	tags, ok := push["tags"].([]any)
+	if !ok || len(tags) != 1 || tags[0] != "v*" {
+		t.Fatalf("release must trigger on version tags: %#v", push)
+	}
+	jobs := asYAMLMap(workflow["jobs"])
+	build, publish := asYAMLMap(jobs["build"]), asYAMLMap(jobs["publish"])
+	if publish["needs"] != "build" {
+		t.Fatal("publishing must wait for build and verification")
+	}
+	buildSteps, publishSteps := asYAMLMaps(build["steps"]), asYAMLMaps(publish["steps"])
+	if !hasRunCommand(buildSteps, "go test ./...") || !hasRunCommand(buildSteps, "go vet ./...") || !hasRunCommand(buildSteps, "go run ./cmd/trace-dock-release --ci") {
+		t.Fatal("build job is missing test/release steps")
+	}
+	if !hasSecretEnvironment(publishSteps, "NPM_TOKEN", "secrets.NPM_TOKEN") || !hasRunCommand(publishSteps, "node dist/npm/publish.cjs") {
+		t.Fatal("publish job must use the npm token secret and publisher")
+	}
+	if !hasRunCommand(publishSteps, "gh release create") {
+		t.Fatal("publish job must create a GitHub release")
+	}
+}
+
+func asYAMLMap(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
+}
+func asYAMLMaps(v any) []map[string]any {
+	xs, _ := v.([]any)
+	out := make([]map[string]any, 0, len(xs))
+	for _, x := range xs {
+		out = append(out, asYAMLMap(x))
+	}
+	return out
+}
+func hasRunCommand(steps []map[string]any, needle string) bool {
+	for _, s := range steps {
+		if strings.Contains(fmt.Sprint(s["run"]), needle) {
+			return true
+		}
+	}
+	return false
+}
+func hasSecretEnvironment(steps []map[string]any, key, needle string) bool {
+	for _, s := range steps {
+		env := asYAMLMap(s["env"])
+		if strings.Contains(fmt.Sprint(env[key]), needle) {
+			return true
+		}
+	}
+	return false
 }
