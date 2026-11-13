@@ -1,0 +1,10 @@
+.idea/
+.venv/
+__pycache__/
+.pytest_cache/
+dist/
+.env
+*.test
+coverage.out
+GITEE_PARAMS
+.trace-dock/

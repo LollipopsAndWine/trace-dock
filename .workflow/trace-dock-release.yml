@@ -1,0 +1,127 @@
+version: '1.0'
+name: trace-dock-release
+displayName: trace-dock 发布
+
+# 将 v0.1.0 等版本 Tag 推送到 Gitee 后触发。
+triggers:
+  trigger: auto
+  push:
+    tags:
+      include:
+        - '^v[0-9]+\.[0-9]+\.[0-9]+$'
+
+stages:
+  - name: build
+    displayName: 测试与打包
+    strategy: naturally
+    trigger: auto
+    executor: []
+    steps:
+      - step: build@golang
+        name: build_trace_dock
+        displayName: Go 构建、测试和打包
+        golangVersion: '1.26.5'
+        commands:
+          - |
+            set -eu
+            export GOTOOLCHAIN=go1.26.5
+            go version
+            go test ./...
+            go vet ./...
+            go run ./cmd/trace-dock-release --ci
+            (cd dist && sha256sum -c SHA256SUMS)
+            ./dist/trace-dock-linux-amd64 --version
+        artifacts:
+          - name: TRACE_DOCK_RELEASE
+            path:
+              - dist/trace-dock-linux-amd64
+              - dist/trace-dock-linux-amd64.tar.gz
+              - dist/trace-dock-linux-amd64.deb
+              - dist/trace-dock-linux-amd64.rpm
+              - dist/trace-dock-linux-arm64
+              - dist/trace-dock-linux-arm64.tar.gz
+              - dist/trace-dock-linux-arm64.deb
+              - dist/trace-dock-linux-arm64.rpm
+              - dist/trace-dock-darwin-amd64
+              - dist/trace-dock-darwin-amd64.tar.gz
+              - dist/trace-dock-darwin-amd64.pkg
+              - dist/trace-dock-darwin-arm64
+              - dist/trace-dock-darwin-arm64.tar.gz
+              - dist/trace-dock-darwin-arm64.pkg
+              - dist/trace-dock-windows-amd64.exe
+              - dist/trace-dock-windows-amd64.zip
+              - dist/SHA256SUMS
+              - dist/RELEASE.json
+              - dist/npm/trace-dock-cli.tgz
+              - dist/npm/trace-dock-linux-x64.tgz
+              - dist/npm/trace-dock-linux-arm64.tgz
+              - dist/npm/trace-dock-darwin-x64.tgz
+              - dist/npm/trace-dock-darwin-arm64.tgz
+              - dist/npm/trace-dock-win32-x64.tgz
+              - dist/npm/publish.json
+              - dist/npm/publish.cjs
+        caches:
+          - /go/pkg/mod
+        notify: []
+        strategy:
+          retry: '0'
+  - name: publish
+    displayName: 发布发行版
+    strategy: naturally
+    trigger: auto
+    executor: []
+    steps:
+      - step: build@nodejs
+        name: publish_npm
+        displayName: 发布 npm 包
+        nodeVersion: '20.11.1'
+        commands:
+          - node dist/npm/publish.cjs
+        dependArtifacts:
+          - name: TRACE_DOCK_RELEASE
+            sourceStage: build
+            sourceStep: build_trace_dock
+        notify: []
+        strategy:
+          retry: '0'
+      - step: release@gitee
+        name: release_trace_dock
+        displayName: 创建 Gitee Release
+        releaseName: trace-dock ${TRACE_DOCK_RELEASE_TAG}
+        description: RELEASE-NOTES.md
+        # 由构建工具通过官方 GITEE_PARAMS 机制传给后续阶段。
+        tagName: ${TRACE_DOCK_RELEASE_TAG}
+        upstreamArtifact:
+          - TRACE_DOCK_RELEASE
+        assertFiles:
+          - dist/trace-dock-linux-amd64
+          - dist/trace-dock-linux-amd64.tar.gz
+          - dist/trace-dock-linux-amd64.deb
+          - dist/trace-dock-linux-amd64.rpm
+          - dist/trace-dock-linux-arm64
+          - dist/trace-dock-linux-arm64.tar.gz
+          - dist/trace-dock-linux-arm64.deb
+          - dist/trace-dock-linux-arm64.rpm
+          - dist/trace-dock-darwin-amd64
+          - dist/trace-dock-darwin-amd64.tar.gz
+          - dist/trace-dock-darwin-amd64.pkg
+          - dist/trace-dock-darwin-arm64
+          - dist/trace-dock-darwin-arm64.tar.gz
+          - dist/trace-dock-darwin-arm64.pkg
+          - dist/trace-dock-windows-amd64.exe
+          - dist/trace-dock-windows-amd64.zip
+          - dist/SHA256SUMS
+          - dist/RELEASE.json
+          - dist/npm/trace-dock-cli.tgz
+          - dist/npm/trace-dock-linux-x64.tgz
+          - dist/npm/trace-dock-linux-arm64.tgz
+          - dist/npm/trace-dock-darwin-x64.tgz
+          - dist/npm/trace-dock-darwin-arm64.tgz
+          - dist/npm/trace-dock-win32-x64.tgz
+          - dist/npm/publish.json
+          - dist/npm/publish.cjs
+        prerelease: false
+        allowUpdate: false
+        notify: []
+        strategy:
+          retry: '0'

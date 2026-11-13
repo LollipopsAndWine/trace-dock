@@ -1,0 +1,11 @@
+{
+  "auto_increment_patch": true,
+  "npm": {
+    "name": "@pjlab/trace-dock",
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "tag": "latest"
+  },
+  "default_server_url": "https://collector.example.com",
+  "version": "0.1.2"
+}
