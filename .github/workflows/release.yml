@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+
+      - name: Set up Node.js for npm package verification
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.11.1'
+
+      - name: Test
+        run: |
+          go test ./...
+          go vet ./...
+          TRACE_DOCK_TEST_NPM=1 go test ./cmd/trace-dock-release -run TestNPMInstall -count=1
+
+      - name: Build all release artifacts
+        env:
+          GOTOOLCHAIN: go1.26.5
+        run: go run ./cmd/trace-dock-release --ci
+
+      - name: Verify checksums and Linux binary
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS)
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(dist/trace-dock-linux-amd64 --version)"
+          test "$actual" = "$expected"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-dock-release-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish npm and GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged release notes
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.11.1'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: trace-dock-release-${{ github.ref_name }}
+          path: dist
+
+      - name: Publish npm packages
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NPM_TOKEN" || { echo "Configure the NPM_TOKEN GitHub Actions secret before releasing."; exit 1; }
+          node dist/npm/publish.cjs
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -d '' assets < <(find dist -type f -print0)
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            --verify-tag \
+            --title "trace-dock $GITHUB_REF_NAME" \
+            --notes-file RELEASE-NOTES.md
