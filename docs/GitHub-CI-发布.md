@@ -5,9 +5,10 @@
 ## 首次设置
 
 1. 在 npm 创建有权发布 `release.json` 中 `@pjlab/trace-dock` 的 granular access token。需要 publish 权限及 npm 要求的 2FA 处理设置；勿将 token 提交到仓库。
-2. 在 GitHub 仓库进入 **Settings → Secrets and variables → Actions → New repository secret**，新增名为 `NPM_TOKEN` 的 secret，值为 npm token。GitHub workflow 只在发布 job 显式读取该 secret。
-3. 确认 `.github/workflows/release.yml` 已提交，并给工作流启用 `contents: write` 权限。该权限由 workflow 声明，供 `gh release create` 上传发行版资产。
-4. 检查 `release.json` 中默认服务端 HTTPS 地址及 npm scope/package 名称；scope 必须由该 npm 账号或组织拥有。
+2. 在 GitHub 仓库进入 **Settings → Environments → New environment**，创建名称为 `trace-dock-env` 的环境。
+3. 进入 `trace-dock-env` 环境，在 **Environment secrets** 中新增名为 `NPM_TOKEN` 的 secret，值为 npm token。发布 job 已声明 `environment: trace-dock-env`，所以只有该 job 能读取这个 secret。
+4. 确认 `.github/workflows/release.yml` 已提交，并给工作流启用 `contents: write` 权限。该权限由 workflow 声明，供 `gh release create` 上传发行版资产。
+5. 检查 `release.json` 中默认服务端 HTTPS 地址及 npm scope/package 名称；scope 必须由该 npm 账号或组织拥有。
 
 ## 发布流程
 
@@ -25,6 +26,6 @@ Workflow 分为两个 job：
 
 Release 版本直接取 tag，例如 `v0.1.3` 生成 CLI 版本 `0.1.3`。CI 不修改或递增 `release.json`；版本更新由下一次要发布的 tag 决定。主包及平台包的 tarball SHA-512 在发布前全部验证；同版本已存在且字节一致时跳过，字节不同则终止。GitHub Release 不覆盖现有同 tag 发行版。
 
-GitHub 上无需导入流水线 YAML，也不需要仓库内保存 PAT。`NPM_TOKEN` 是唯一发布 secret；`GITHUB_TOKEN` 由 Actions 自动提供。发布资产包含二进制、原生包、压缩包、`SHA256SUMS`、`RELEASE.json` 和生成的 npm tarballs。
+GitHub 上无需导入流水线 YAML，也不需要仓库内保存 PAT。`NPM_TOKEN` 是 `trace-dock-env` 环境中的唯一发布 secret；`GITHUB_TOKEN` 由 Actions 自动提供。发布资产包含二进制、原生包、压缩包、`SHA256SUMS`、`RELEASE.json` 和生成的 npm tarballs。
 
 GitHub Actions workflow 与 npm scoped 包权限参考：[GitHub Actions permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)、[npm scoped public packages](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/)。

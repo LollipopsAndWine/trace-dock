@@ -151,6 +151,9 @@ func TestGitHubReleaseWorkflow(t *testing.T) {
 	if publish["needs"] != "build" {
 		t.Fatal("publishing must wait for build and verification")
 	}
+	if publish["environment"] != "trace-dock-env" {
+		t.Fatalf("publishing must use the npm environment: %#v", publish["environment"])
+	}
 	buildSteps, publishSteps := asYAMLMaps(build["steps"]), asYAMLMaps(publish["steps"])
 	if !hasRunCommand(buildSteps, "go test ./...") || !hasRunCommand(buildSteps, "go vet ./...") || !hasRunCommand(buildSteps, "go run ./cmd/trace-dock-release --ci") {
 		t.Fatal("build job is missing test/release steps")

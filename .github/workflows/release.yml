@@ -59,6 +59,7 @@ jobs:
     name: Publish npm and GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    environment: trace-dock-env
     steps:
       - name: Checkout tagged release notes
         uses: actions/checkout@v4
