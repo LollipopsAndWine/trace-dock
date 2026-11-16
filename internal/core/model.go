@@ -2,8 +2,9 @@ package core
 
 import "time"
 
-const ManifestSchema = "1.0"
-const AdapterVersion = "1.0.0"
+const ManifestSchema = "1.1"
+const AdapterVersion = "1.2.0"
+const LargeFileRulesVersion = "1.2.0"
 
 func (s *Session) SubagentCount() int {
 	n := 0
@@ -48,12 +49,14 @@ type Session struct {
 	Aliases            []string          `json:"aliases"`
 	Schema             string            `json:"schema"`
 	Source             string            `json:"trajectory_path"`
+	DataHome           string            `json:"trajectory_data_home,omitempty"`
 	Workspace          Workspace         `json:"workspace"`
 	EndedAt            *time.Time        `json:"session_ended_at"`
 	EndReason          string            `json:"end_time_reason,omitempty"`
 	CollectedAt        *time.Time        `json:"collected_at"`
 	Delay              *float64          `json:"collection_delay_seconds"`
 	Validity           string            `json:"validity"`
+	ValidityReason     string            `json:"validity_reason,omitempty"`
 	Reversibility      string            `json:"reversibility"`
 	Eligibility        string            `json:"archive_eligibility"`
 	Evidence           []string          `json:"evidence"`
@@ -78,7 +81,7 @@ type Artifact struct {
 	WorkspaceID  string   `json:"workspace_artifact_id,omitempty"`
 	Key          string   `json:"object_key"`
 	Size         int64    `json:"size_bytes"`
-	SHA256       string   `json:"sha256"`
+	CRC64        string   `json:"crc64"`
 	Verification string   `json:"verification"`
 	LocalPath    string   `json:"-"`
 }
@@ -127,6 +130,7 @@ type Manifest struct {
 	Selection         []string   `json:"selection"`
 	SelectionSHA256   string     `json:"selection_sha256"`
 	Discovered        int        `json:"discovered_count"`
+	Selectable        int        `json:"selectable_count,omitempty"`
 	Sessions          []*Session `json:"sessions"`
 	Artifacts         []Artifact `json:"artifacts"`
 	Summary           Summary    `json:"summary"`

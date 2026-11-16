@@ -54,7 +54,7 @@ func Run(args []string) error {
 	u.Printf("将删除 CLI 可执行文件：\n  %s\n", executable)
 	u.Printf("将删除 CLI 专属数据目录：\n  %s\n", data)
 	u.Printf("不会删除该目录之外的用户文件、源代码、workspace、OSS 对象或服务端数据。\n")
-	ok, err := u.Confirm("确认删除 trace-dock CLI 可执行文件？")
+	ok, err := u.ConfirmNo("确认删除 trace-dock CLI 可执行文件？")
 	if err != nil {
 		return err
 	}
@@ -62,7 +62,7 @@ func Run(args []string) error {
 		u.Printf("已取消卸载。\n")
 		return nil
 	}
-	ok, err = u.Confirm("确认删除上述 CLI 配置、任务和本地归档？")
+	ok, err = u.ConfirmNo("确认删除上述 CLI 配置、任务和本地归档？")
 	if err != nil {
 		return err
 	}
@@ -83,11 +83,15 @@ func Run(args []string) error {
 func dataHome() (string, error) {
 	if configured := os.Getenv("TRACE_DOCK_HOME"); configured != "" {
 		p, err := filepath.Abs(configured)
-		if err != nil { return "", fmt.Errorf("无法定位 TRACE_DOCK_HOME：%w", err) }
+		if err != nil {
+			return "", fmt.Errorf("无法定位 TRACE_DOCK_HOME：%w", err)
+		}
 		return p, nil
 	}
 	home, err := os.UserHomeDir()
-	if err != nil { return "", fmt.Errorf("无法定位用户目录：%w", err) }
+	if err != nil {
+		return "", fmt.Errorf("无法定位用户目录：%w", err)
+	}
 	if os.Getenv("LOCALAPPDATA") != "" && os.PathSeparator == '\\' {
 		return filepath.Join(os.Getenv("LOCALAPPDATA"), "trace-dock"), nil
 	}
@@ -95,57 +99,182 @@ func dataHome() (string, error) {
 }
 
 func MarkManagedData(path string) error {
-	if err := validateDataHome(path); err != nil { return err }
+	path, err := ensureDataHome(path)
+	if err != nil {
+		return err
+	}
 	marker := filepath.Join(path, managedMarker)
-	if _, err := os.Stat(marker); err == nil { return nil } else if !os.IsNotExist(err) { return err }
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	b, _ := json.Marshal(map[string]any{"managed_by": "trace-dock", "version": 1})
 	return os.WriteFile(marker, append(b, '\n'), 0600)
 }
 
 func validateDataHome(path string) error {
-	path, err := filepath.Abs(path)
-	if err != nil { return err }
-	if path == filepath.Dir(path) || path == "." || path == string(filepath.Separator) { return fmt.Errorf("拒绝把根目录作为 CLI 数据目录") }
-	st, err := os.Lstat(path)
-	if os.IsNotExist(err) { return os.MkdirAll(path, 0700) }
-	if err != nil { return err }
-	if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 { return fmt.Errorf("CLI 数据目录不是安全的普通目录") }
+	path, err := ensureDataHome(path)
+	if err != nil {
+		return err
+	}
 	return validateDir(path, true)
 }
 
+func ensureDataHome(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if path == filepath.Dir(path) || path == "." || path == string(filepath.Separator) {
+		return "", fmt.Errorf("拒绝把根目录作为 CLI 数据目录")
+	}
+	st, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			return "", err
+		}
+		st, err = os.Lstat(path)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("CLI 数据目录不是安全的普通目录")
+	}
+	return path, nil
+}
+
 func validateDir(path string, top bool) error {
-	entries, err := os.ReadDir(path); if err != nil { return err }
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
 	allowed := map[string]bool{}
-	if top { for _, n := range []string{managedMarker, "config.json", "device.json", "pending-create.json", "jobs"} { allowed[n] = true } } else { for _, n := range []string{"job.json", "discovery.json", "selection.json", "consent.json", "manifest.json", "exclusions.jsonl", "collection-complete.json", "upload-state.json", "receipt.json", "logs.jsonl", "large-files", "staging"} { allowed[n] = true } }
+	if top {
+		for _, n := range []string{managedMarker, "config.json", "device.json", "pending-create.json", "jobs"} {
+			allowed[n] = true
+		}
+	} else {
+		for _, n := range []string{"job.json", "discovery.json", "selection.json", "consent.json", "manifest.json", "exclusions.jsonl", "collection-complete.json", "upload-state.json", "receipt.json", "logs.jsonl", "large-files", "staging"} {
+			allowed[n] = true
+		}
+	}
 	for _, entry := range entries {
-		name := entry.Name(); if !allowed[name] { return fmt.Errorf("CLI 数据目录含未知文件 %q，已拒绝删除", filepath.Join(path, name)) }
-		info, err := entry.Info(); if err != nil { return err }; if info.Mode()&os.ModeSymlink != 0 { return fmt.Errorf("CLI 数据目录含符号链接 %q，已拒绝删除", filepath.Join(path, name)) }
-		if name == "jobs" || name == "large-files" || name == "staging" { if !info.IsDir() { return fmt.Errorf("CLI 数据目录结构异常：%s", name) }; if err := validateChildren(path, name); err != nil { return err } }
+		name := entry.Name()
+		if !allowed[name] {
+			if !top && strings.HasPrefix(name, "workspace-staging-") {
+				if err := validateWorkspaceStaging(filepath.Join(path, name), entry); err != nil {
+					return err
+				}
+				continue
+			}
+			return fmt.Errorf("CLI 数据目录含未知文件 %q，已拒绝删除", filepath.Join(path, name))
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("CLI 数据目录含符号链接 %q，已拒绝删除", filepath.Join(path, name))
+		}
+		if name == "jobs" || name == "large-files" || name == "staging" {
+			if !info.IsDir() {
+				return fmt.Errorf("CLI 数据目录结构异常：%s", name)
+			}
+			if err := validateChildren(path, name); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
+func validateWorkspaceStaging(path string, entry os.DirEntry) error {
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("workspace staging 不是普通目录，已拒绝操作：%s", path)
+	}
+	return filepath.WalkDir(path, func(current string, item os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if item.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("workspace staging 含符号链接，已拒绝操作：%s", current)
+		}
+		if item.IsDir() {
+			return nil
+		}
+		fileInfo, err := item.Info()
+		if err != nil {
+			return err
+		}
+		if !fileInfo.Mode().IsRegular() {
+			return fmt.Errorf("workspace staging 含非普通文件，已拒绝操作：%s", current)
+		}
+		return nil
+	})
+}
+
 func validateChildren(parent, name string) error {
-	path := filepath.Join(parent, name); entries, err := os.ReadDir(path); if err != nil { return err }
+	path := filepath.Join(parent, name)
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
-		info, err := entry.Info(); if err != nil { return err }; if info.Mode()&os.ModeSymlink != 0 { return fmt.Errorf("CLI 数据目录含符号链接 %q，已拒绝删除", filepath.Join(path, entry.Name())) }
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("CLI 数据目录含符号链接 %q，已拒绝删除", filepath.Join(path, entry.Name()))
+		}
 		if name == "jobs" {
-			if !info.IsDir() { return fmt.Errorf("jobs 下存在非任务目录 %q，已拒绝删除", entry.Name()) }
-			if err := validateDir(filepath.Join(path, entry.Name()), false); err != nil { return err }
+			if !info.IsDir() {
+				return fmt.Errorf("jobs 下存在非任务目录 %q，已拒绝删除", entry.Name())
+			}
+			if err := validateDir(filepath.Join(path, entry.Name()), false); err != nil {
+				return err
+			}
 		} else if name == "large-files" {
-			if info.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") { return fmt.Errorf("large-files 下含未知文件 %q，已拒绝删除", entry.Name()) }
+			if info.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+				return fmt.Errorf("large-files 下含未知文件 %q，已拒绝删除", entry.Name())
+			}
 		} else {
-			if info.IsDir() && entry.Name() != ".oss-checkpoints" { return fmt.Errorf("staging 下含未知目录 %q，已拒绝删除", entry.Name()) }
-			if !info.IsDir() && !(strings.HasSuffix(entry.Name(), ".jsonl") || strings.HasSuffix(entry.Name(), ".tar.zst")) { return fmt.Errorf("staging 下含未知文件 %q，已拒绝删除", entry.Name()) }
-			if info.IsDir() { if err := validateCheckpointDir(filepath.Join(path, entry.Name())); err != nil { return err } }
+			if info.IsDir() && entry.Name() != ".oss-checkpoints" {
+				return fmt.Errorf("staging 下含未知目录 %q，已拒绝删除", entry.Name())
+			}
+			if !info.IsDir() && !(strings.HasSuffix(entry.Name(), ".jsonl") || strings.HasSuffix(entry.Name(), ".tar.zst")) {
+				return fmt.Errorf("staging 下含未知文件 %q，已拒绝删除", entry.Name())
+			}
+			if info.IsDir() {
+				if err := validateCheckpointDir(filepath.Join(path, entry.Name())); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
 }
 
 func validateCheckpointDir(path string) error {
-	entries, err := os.ReadDir(path); if err != nil { return err }
-	for _, entry := range entries { info, err := entry.Info(); if err != nil { return err }; if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !strings.HasSuffix(entry.Name(), ".json") { return fmt.Errorf("OSS checkpoint 目录含未知文件，已拒绝删除") } }
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !strings.HasSuffix(entry.Name(), ".json") {
+			return fmt.Errorf("OSS checkpoint 目录含未知文件，已拒绝删除")
+		}
+	}
 	return nil
 }
 

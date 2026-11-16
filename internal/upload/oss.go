@@ -22,20 +22,21 @@ type Object struct {
 	Uploaded bool          `json:"uploaded"`
 }
 type State struct {
-	ManifestSHA  string   `json:"manifest_sha256"`
-	SelectionSHA string   `json:"selection_sha256"`
-	Objects      []Object `json:"objects"`
-	Completed    bool     `json:"completed"`
+	ManifestCRC64 string   `json:"manifest_crc64"`
+	SelectionSHA  string   `json:"selection_sha256"`
+	Objects       []Object `json:"objects"`
+	Completed     bool     `json:"completed"`
 }
 type Uploader struct {
-	API        *api.Client
-	JobID, Dir string
-	AllowHTTP  bool
-	HTTP       *http.Client
-	creds      api.Credentials
-	client     *oss.Client
-	State      *State
-	Progress   func(completed, total int, bytes int64)
+	API            *api.Client
+	JobID, Dir     string
+	AllowHTTP      bool
+	HTTP           *http.Client
+	creds          api.Credentials
+	client         *oss.Client
+	State          *State
+	Progress       func(completed, total int, bytes int64)
+	ObjectProgress func(index, count int, name string, transferred, objectSize, totalTransferred, totalSize int64)
 }
 
 func (u *Uploader) Save() error {
@@ -46,7 +47,7 @@ func (u *Uploader) refresh(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
-	if !strings.HasPrefix(c.Prefix, "trajectory/token=") || !strings.HasSuffix(c.Prefix, "/") || c.AccessKeyID == "" || c.AccessKeySecret == "" || c.SecurityToken == "" {
+	if !strings.HasPrefix(c.Prefix, "trajectory/token=") || !strings.HasSuffix(c.Prefix, "/job="+u.JobID+"/") || c.AccessKeyID == "" || c.AccessKeySecret == "" || c.SecurityToken == "" {
 		return fmt.Errorf("invalid job credentials")
 	}
 	if c.Region == "" {
@@ -62,7 +63,7 @@ func (u *Uploader) refresh(ctx context.Context) error {
 	return nil
 }
 func (u *Uploader) Run(ctx context.Context) error {
-	if u.State == nil || u.State.ManifestSHA == "" {
+	if u.State == nil || u.State.ManifestCRC64 == "" {
 		return fmt.Errorf("missing confirmed upload state")
 	}
 	if u.HTTP == nil {
@@ -72,8 +73,11 @@ func (u *Uploader) Run(ctx context.Context) error {
 	if e := core.ReadJSON(filepath.Join(u.Dir, "manifest.json"), &manifest); e != nil {
 		return e
 	}
-	manifestHash, _, e := core.HashFile(filepath.Join(u.Dir, "manifest.json"))
-	if e != nil || manifestHash != u.State.ManifestSHA || manifest.SelectionSHA256 != u.State.SelectionSHA || manifest.JobID != u.JobID || manifest.ObjectPrefix == "" || len(u.State.Objects) != len(manifest.Artifacts)+1 {
+	manifestCRC64, _, e := core.CRC64File(filepath.Join(u.Dir, "manifest.json"))
+	if e != nil || manifest.Schema != core.ManifestSchema || manifestCRC64 != u.State.ManifestCRC64 || manifest.SelectionSHA256 != u.State.SelectionSHA || manifest.JobID != u.JobID || !strings.HasPrefix(manifest.ObjectPrefix, "trajectory/token=") || !strings.HasSuffix(manifest.ObjectPrefix, "/job="+u.JobID+"/") || len(u.State.Objects) != len(manifest.Artifacts)+1 {
+		if e == nil && manifest.Schema != core.ManifestSchema {
+			return fmt.Errorf("本地任务使用旧采集协议 %s，当前版本为 %s；请新建任务后重新采集", manifest.Schema, core.ManifestSchema)
+		}
 		return fmt.Errorf("confirmed manifest or upload scope changed")
 	}
 	expected := map[string]core.Artifact{}
@@ -90,10 +94,10 @@ func (u *Uploader) Run(ctx context.Context) error {
 		}
 		seen[o.Artifact.Key] = true
 		if i == len(u.State.Objects)-1 {
-			if o.Path != "manifest.json" || o.Artifact.Key != manifest.ObjectPrefix+"manifest.json" || o.Artifact.SHA256 != manifestHash {
+			if o.Path != "manifest.json" || o.Artifact.Key != manifest.ObjectPrefix+"manifest.json" || o.Artifact.CRC64 != manifestCRC64 {
 				return fmt.Errorf("manifest object changed")
 			}
-		} else if a, ok := expected[o.Artifact.Key]; !ok || a.SHA256 != o.Artifact.SHA256 || a.Size != o.Artifact.Size || a.ID != o.Artifact.ID {
+		} else if a, ok := expected[o.Artifact.Key]; !ok || a.CRC64 != o.Artifact.CRC64 || a.Size != o.Artifact.Size || a.ID != o.Artifact.ID {
 			return fmt.Errorf("upload scope changed")
 		}
 	}
@@ -101,23 +105,52 @@ func (u *Uploader) Run(ctx context.Context) error {
 		if !core.SafeRelative(o.Path) {
 			return fmt.Errorf("unsafe staging path")
 		}
-		h, n, e := core.HashFile(filepath.Join(u.Dir, o.Path))
-		if e != nil || h != o.Artifact.SHA256 || n != o.Artifact.Size {
+		h, n, e := core.CRC64File(filepath.Join(u.Dir, o.Path))
+		if e != nil || h != o.Artifact.CRC64 || n != o.Artifact.Size {
 			return fmt.Errorf("本地归档发生变化，拒绝扩大或修改已确认范围")
 		}
 	}
 	if e = u.refresh(ctx); e != nil {
 		return e
 	}
+	if u.creds.Prefix != manifest.ObjectPrefix {
+		return fmt.Errorf("OSS credentials do not match confirmed Job prefix")
+	}
+	var totalSize int64
+	for _, object := range u.State.Objects {
+		totalSize += object.Artifact.Size
+	}
+	var completedBytes int64
 	for i := range u.State.Objects {
 		o := &u.State.Objects[i]
 		if o.Uploaded {
+			completedBytes += o.Artifact.Size
+			if u.ObjectProgress != nil {
+				u.ObjectProgress(i+1, len(u.State.Objects), filepath.Base(o.Path), o.Artifact.Size, o.Artifact.Size, completedBytes, totalSize)
+			}
 			continue
 		}
-		if e = u.put(ctx, o); e != nil {
+		index := i
+		baseBytes := completedBytes
+		progress := func(transferred, objectSize int64) {
+			if u.ObjectProgress != nil {
+				if objectSize <= 0 {
+					objectSize = o.Artifact.Size
+				}
+				u.ObjectProgress(index+1, len(u.State.Objects), filepath.Base(o.Path), transferred, objectSize, baseBytes+transferred, totalSize)
+			}
+		}
+		if u.ObjectProgress != nil {
+			u.ObjectProgress(index+1, len(u.State.Objects), filepath.Base(o.Path), 0, o.Artifact.Size, baseBytes, totalSize)
+		}
+		if e = u.put(ctx, o, progress); e != nil {
 			return e
 		}
 		o.Uploaded = true
+		completedBytes += o.Artifact.Size
+		if u.ObjectProgress != nil {
+			u.ObjectProgress(index+1, len(u.State.Objects), filepath.Base(o.Path), o.Artifact.Size, o.Artifact.Size, completedBytes, totalSize)
+		}
 		if e = u.Save(); e != nil {
 			return e
 		}
@@ -131,10 +164,10 @@ func (u *Uploader) Run(ctx context.Context) error {
 	}
 	return nil
 }
-func (u *Uploader) put(ctx context.Context, o *Object) error {
+func (u *Uploader) put(ctx context.Context, o *Object, progress func(transferred, objectSize int64)) error {
 	p := filepath.Join(u.Dir, o.Path)
 	head, e := u.client.HeadObject(ctx, &oss.HeadObjectRequest{Bucket: oss.Ptr(u.creds.Bucket), Key: oss.Ptr(o.Artifact.Key)})
-	if e == nil && head.ContentLength == o.Artifact.Size && head.Metadata["sha256"] == o.Artifact.SHA256 {
+	if e == nil && head.ContentLength == o.Artifact.Size && head.HashCRC64 != nil && oss.ToString(head.HashCRC64) == o.Artifact.CRC64 {
 		return nil
 	}
 	uploader := oss.NewUploader(u.client, func(opt *oss.UploaderOptions) {
@@ -143,15 +176,33 @@ func (u *Uploader) put(ctx context.Context, o *Object) error {
 		opt.PartSize = 16 << 20
 		opt.ParallelNum = 3
 	})
-	_, e = uploader.UploadFile(ctx, &oss.PutObjectRequest{Bucket: oss.Ptr(u.creds.Bucket), Key: oss.Ptr(o.Artifact.Key), Metadata: map[string]string{"sha256": o.Artifact.SHA256}}, p)
-	return e
+	result, e := uploader.UploadFile(ctx, &oss.PutObjectRequest{
+		Bucket: oss.Ptr(u.creds.Bucket),
+		Key:    oss.Ptr(o.Artifact.Key),
+		ProgressFn: func(_ int64, transferred, total int64) {
+			if progress != nil {
+				progress(transferred, total)
+			}
+		},
+	}, p)
+	if e != nil {
+		return e
+	}
+	if result == nil || result.HashCRC64 == nil || oss.ToString(result.HashCRC64) != o.Artifact.CRC64 {
+		return fmt.Errorf("OSS CRC64 mismatch for %s", filepath.Base(o.Path))
+	}
+	return nil
 }
 func Prepare(dir string, m *core.Manifest) (*State, error) {
 	b, e := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if e != nil {
 		return nil, e
 	}
-	s := &State{ManifestSHA: core.Digest(b), SelectionSHA: m.SelectionSHA256}
+	manifestCRC64, _, e := core.CRC64File(filepath.Join(dir, "manifest.json"))
+	if e != nil {
+		return nil, e
+	}
+	s := &State{ManifestCRC64: manifestCRC64, SelectionSHA: m.SelectionSHA256}
 	for _, a := range m.Artifacts {
 		p := a.LocalPath
 		if p == "" {
@@ -174,7 +225,7 @@ func Prepare(dir string, m *core.Manifest) (*State, error) {
 		}
 		s.Objects = append(s.Objects, Object{Artifact: a, Path: rel})
 	}
-	s.Objects = append(s.Objects, Object{Artifact: core.Artifact{ID: "manifest", Kind: "manifest", Key: m.ObjectPrefix + "manifest.json", Size: int64(len(b)), SHA256: s.ManifestSHA}, Path: "manifest.json"})
+	s.Objects = append(s.Objects, Object{Artifact: core.Artifact{ID: "manifest", Kind: "manifest", Key: m.ObjectPrefix + "manifest.json", Size: int64(len(b)), CRC64: s.ManifestCRC64}, Path: "manifest.json"})
 	return s, core.WriteJSON(filepath.Join(dir, "upload-state.json"), s)
 }
 func Load(dir string) (*State, error) {
@@ -184,7 +235,7 @@ func Load(dir string) (*State, error) {
 }
 func (s *State) Completion() api.Completion {
 	o := s.Objects[len(s.Objects)-1]
-	return api.Completion{ManifestKey: o.Artifact.Key, ManifestSHA: s.ManifestSHA, ManifestSize: o.Artifact.Size}
+	return api.Completion{ManifestKey: o.Artifact.Key, ManifestCRC64: s.ManifestCRC64, ManifestSize: o.Artifact.Size}
 }
 func (s *State) Bytes() int64 {
 	var n int64

@@ -54,6 +54,8 @@ func Discover(tool, home, root string) ([]*Session, error) {
 			continue
 		}
 		s := parseSession(tool, p, st.Size(), home)
+		s.DataHome = filepath.Dir(root)
+		s.Workspace = Classify(s.Workspace.Raw, home, s.DataHome)
 		sessions = append(sessions, s)
 	}
 	if tool == "claude" {
@@ -103,15 +105,17 @@ func Discover(tool, home, root string) ([]*Session, error) {
 
 func parseSession(tool, p string, size int64, home string) *Session {
 	id := strings.TrimSuffix(filepath.Base(p), ".jsonl")
-	s := &Session{Tool: tool, ID: id, RootID: id, Source: p, Size: size, Schema: "unsupported", Validity: "invalid", Reversibility: "unknown", Eligibility: "archive_only", Downloads: map[string]string{}, Aliases: []string{}}
+	s := &Session{Tool: tool, ID: id, RootID: id, Source: p, Size: size, Schema: "unknown", Validity: "invalid", Reversibility: "unknown", Eligibility: "archive_only", Downloads: map[string]string{}, Aliases: []string{}}
 	if tool == "codex" {
 		if m := uuidSuffix.FindStringSubmatch(p); m != nil {
 			s.ID = m[1]
 			s.RootID = s.ID
 		} else {
-			s.SkipReason = "invalid_codex_filename"
-			s.Eligibility = "excluded"
-			return s
+			// A future filename format must not prevent raw-file collection.
+			// Keep IDs stable and distinct even when basenames repeat by date.
+			s.ID = "file-" + Digest([]byte(filepath.Clean(p)))[:24]
+			s.RootID = s.ID
+			s.Evidence = append(s.Evidence, "session_id_from_path")
 		}
 	}
 	if tool == "claude" && filepath.Base(filepath.Dir(p)) == "subagents" && strings.HasPrefix(id, "agent-") {
@@ -121,11 +125,14 @@ func parseSession(tool, p string, size int64, home string) *Session {
 	f, e := os.Open(p)
 	if e != nil {
 		s.SkipReason = "trajectory_unreadable"
+		s.Eligibility = "excluded"
 		return s
 	}
 	defer f.Close()
 	r := bufio.NewReaderSize(f, 64*1024)
-	old, newSchema, known, broken, complete, compacted, uncertain, edit := false, false, false, false, false, false, false, false
+	responseItems, standalonePayload, framedPayload := false, false, false
+	known, broken, complete, compacted, uncertain, edit := false, false, false, false, false, false
+	parseError := false
 	cwd := ""
 	for {
 		// Bound malformed single events while allowing large normal JSONL records.
@@ -134,6 +141,7 @@ func parseSession(tool, p string, size int64, home string) *Session {
 			var m map[string]any
 			if json.Unmarshal(line, &m) != nil || m == nil {
 				broken = true
+				parseError = true
 			} else {
 				s.Events++
 				if v := str(m, "timestamp"); v != "" {
@@ -154,10 +162,15 @@ func parseSession(tool, p string, size int64, home string) *Session {
 					payload := obj(m, "payload")
 					pt := str(payload, "type")
 					if typ == "response_item" {
-						old = true
+						responseItems = true
 					}
-					if pt == "item_completed" || pt == "custom_tool_call" {
-						newSchema = true
+					// These nested payloads coexist with response_item messages in
+					// newer rollouts; their event envelopes make this unambiguous.
+					if (typ == "response_item" && pt == "custom_tool_call") || (typ == "event_msg" && pt == "item_completed") {
+						framedPayload = true
+					}
+					if typ == "" && (pt == "item_completed" || pt == "custom_tool_call") {
+						standalonePayload = true
 					}
 					switch typ {
 					case "session_meta", "turn_context":
@@ -278,6 +291,7 @@ func parseSession(tool, p string, size int64, home string) *Session {
 		if e != nil {
 			if e != io.EOF {
 				broken = true
+				parseError = true
 			}
 			break
 		}
@@ -286,32 +300,41 @@ func parseSession(tool, p string, size int64, home string) *Session {
 	s.NonCode = s.Workspace.Kind == "artifact"
 	if tool == "codex" {
 		switch {
-		case old && newSchema:
-			s.SkipReason = "mixed_codex_schema"
-			s.Eligibility = "excluded"
-		case old:
-			s.Schema = "codex.response_item.v1"
-		case newSchema:
+		case responseItems && standalonePayload:
+			s.Schema = "codex.mixed"
+			s.Evidence = append(s.Evidence, "mixed_codex_schema")
+		case framedPayload || standalonePayload:
 			s.Schema = "codex.payload.v2"
+		case responseItems:
+			s.Schema = "codex.response_item.v1"
 		default:
-			s.SkipReason = "unsupported_codex_schema"
-			s.Eligibility = "excluded"
+			s.Evidence = append(s.Evidence, "unrecognized_codex_schema")
 		}
 		s.Reversibility = "not_reconstructable"
 		s.Evidence = append(s.Evidence, "missing_starting_baseline")
 	} else if known {
 		s.Schema = "claude.v1"
 	} else {
-		s.SkipReason = "unsupported_claude_schema"
-		s.Eligibility = "excluded"
+		s.Evidence = append(s.Evidence, "unrecognized_claude_schema")
 	}
 	if s.EndedAt == nil {
 		s.EndReason = "no_event_timestamp"
 	}
 	if complete && !broken {
 		s.Validity = "valid"
+		s.ValidityReason = "completion_observed"
 	} else {
 		s.Evidence = append(s.Evidence, "incomplete_or_error_termination")
+		switch {
+		case parseError:
+			s.ValidityReason = "trajectory_parse_error"
+		case broken && complete:
+			s.ValidityReason = "completed_with_recorded_errors"
+		case broken:
+			s.ValidityReason = "error_or_interruption_recorded"
+		default:
+			s.ValidityReason = "completion_not_observed"
+		}
 	}
 	if broken {
 		s.Evidence = append(s.Evidence, "damaged_or_error_events")
@@ -459,6 +482,8 @@ func RefreshSelected(previous []*Session, home string) []*Session {
 			continue
 		}
 		s := parseSession(old.Tool, old.Source, st.Size(), home)
+		s.DataHome = old.DataHome
+		s.Workspace = Classify(s.Workspace.Raw, home, s.DataHome)
 		s.ID = old.ID
 		s.RootID = old.RootID
 		s.ParentID = old.ParentID

@@ -1,77 +1,137 @@
 package core
 
 import (
-	"bytes"
+	"bufio"
+	"context"
+	_ "embed"
+	"encoding/json"
+	"fmt"
 	"io"
 	"regexp"
+	"strings"
 )
 
-var baselinePatterns = []string{
-	`(?i)-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----`,
-	`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`,
-	`\bLTAI[A-Za-z0-9]{16,}\b`,
-	`\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})`,
-	`(?i)(?:["']?(?:password|passwd|api[_-]?key|access[_-]?key[_-]?secret|secret[_-]?key|client[_-]?secret|authorization|token)["']?\s*[:=]\s*["']?)[A-Za-z0-9_./+@:= -]{8,}`,
-	`(?i)\bBearer\s+[A-Za-z0-9_.-]{12,}`,
-	`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`,
-	`(?i)https?://[^\s/:]+:[^\s/@]+@`,
-	`(?i)(?:aws_secret_access_key|secret_access_key|private_key|api_key)\s*["']?\s*[:=]\s*["']?[A-Za-z0-9/+_=-]{8,}`,
-	`\bAIza[A-Za-z0-9_-]{30,}\b`,
-}
+const SecretRulesVersion = "2.1.0"
+
+// secretRulesJSON preserves guiji's second-layer rules. Literal credential
+// fallback checks supplement them without changing the uploaded bytes.
+//
+//go:embed secret-rules.json
+var secretRulesJSON []byte
 
 type Scanner struct {
-	patterns []*regexp.Regexp
-	token    []byte
+	pattern *regexp.Regexp
 }
 
-func NewScanner(rules Rules, token string) (*Scanner, error) {
-	s := &Scanner{token: []byte(token)}
-	for _, p := range append(append([]string{}, baselinePatterns...), rules.SecretPatterns...) {
-		r, e := regexp.Compile(p)
-		if e != nil {
-			return nil, e
-		}
-		s.patterns = append(s.patterns, r)
-	}
-	return s, nil
+func NewScanner() (*Scanner, error) {
+	return loadSecretRules(secretRulesJSON)
 }
-func (s *Scanner) Hit(b []byte) bool {
-	if len(s.token) > 0 && bytes.Contains(b, s.token) {
-		return true
+
+func loadSecretRules(data []byte) (*Scanner, error) {
+	var config struct {
+		Version string `json:"version"`
+		Rules   []struct {
+			ID    string `json:"id"`
+			Regex string `json:"regex"`
+		} `json:"rules"`
 	}
-	for _, p := range s.patterns {
-		if p.Match(b) {
-			return true
+	if err := json.Unmarshal(data, &config); err != nil || config.Version != SecretRulesVersion || len(config.Rules) == 0 {
+		return nil, fmt.Errorf("invalid embedded secret rules")
+	}
+	patterns := make([]string, 0, len(config.Rules))
+	seen := map[string]bool{}
+	for _, rule := range config.Rules {
+		if rule.ID == "" || rule.Regex == "" || seen[rule.ID] {
+			return nil, fmt.Errorf("invalid embedded secret rule")
 		}
+		seen[rule.ID] = true
+		patterns = append(patterns, "(?:"+rule.Regex+")")
 	}
-	return false
+	pattern, err := regexp.Compile(strings.Join(patterns, "|"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid embedded secret pattern")
+	}
+	return &Scanner{pattern: pattern}, nil
+}
+
+func (s *Scanner) Hit(b []byte) bool {
+	return s.pattern.Match(b) || hasLiteralSecret(b)
 }
 
 // Copy scans the exact bytes written to staging. It never emits matched values.
 func (s *Scanner) Copy(dst io.Writer, src io.Reader) (bool, error) {
-	chunk := make([]byte, 64*1024)
-	var tail []byte
-	for {
-		n, e := src.Read(chunk)
-		if n > 0 {
-			b := append(tail, chunk[:n]...)
-			if s.Hit(b) {
-				return true, nil
-			}
-			if _, err := dst.Write(chunk[:n]); err != nil {
-				return false, err
-			}
-			start := len(b) - 32*1024
-			if start < 0 {
-				start = 0
-			}
-			tail = append([]byte(nil), b[start:]...)
+	return s.CopyContext(context.Background(), dst, src)
+}
+
+// CopyContext checks cancellation between bounded reads before writing more bytes.
+func (s *Scanner) CopyContext(ctx context.Context, dst io.Writer, src io.Reader) (bool, error) {
+	return s.CopyContextProgress(ctx, dst, src, nil)
+}
+
+func (s *Scanner) CopyContextProgress(ctx context.Context, dst io.Writer, src io.Reader, progress func(int64)) (bool, error) {
+	reader := &scanReader{ctx: ctx, src: src, dst: dst, progress: progress, nextReport: 1 << 20}
+	// MatchReader retains regexp state across reads, including arbitrarily long
+	// PEM blocks and JWTs, without retaining the entire file in memory.
+	hit := s.pattern.MatchReader(bufio.NewReaderSize(reader, 64*1024))
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if reader.err != nil {
+		return false, reader.err
+	}
+	if progress != nil && reader.processed != reader.reported {
+		progress(reader.processed)
+	}
+	return hit || reader.fallbackHit, nil
+}
+
+type scanReader struct {
+	ctx                             context.Context
+	src                             io.Reader
+	dst                             io.Writer
+	progress                        func(int64)
+	processed, reported, nextReport int64
+	err                             error
+	tail                            []byte
+	fallbackHit                     bool
+}
+
+func (r *scanReader) Read(b []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		r.err = err
+		return 0, err
+	}
+	n, err := r.src.Read(b)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		r.err = ctxErr
+		return 0, ctxErr
+	}
+	if n > 0 {
+		window := append(r.tail, b[:n]...)
+		if hasLiteralSecret(window) {
+			r.fallbackHit = true
+			return 0, io.EOF
 		}
-		if e == io.EOF {
-			return false, nil
+		// Fallback candidates are bounded to a few KiB. Preserve enough context
+		// for names, calls and literals split across read boundaries.
+		r.tail = append(r.tail[:0], window[max(0, len(window)-(32<<10)):]...)
+		written, writeErr := r.dst.Write(b[:n])
+		if writeErr == nil && written != n {
+			writeErr = io.ErrShortWrite
 		}
-		if e != nil {
-			return false, e
+		if writeErr != nil {
+			r.err = writeErr
+			return 0, writeErr
+		}
+		r.processed += int64(n)
+		if r.progress != nil && r.processed >= r.nextReport {
+			r.progress(r.processed)
+			r.reported = r.processed
+			r.nextReport = r.processed + (1 << 20)
 		}
 	}
+	if err != nil && err != io.EOF {
+		r.err = err
+	}
+	return n, err
 }

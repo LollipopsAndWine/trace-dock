@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
+	"hash/crc64"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 func ID() string {
@@ -19,15 +22,21 @@ func ID() string {
 	return hex.EncodeToString(b[:])
 }
 func Digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
-func HashFile(p string) (string, int64, error) {
+var crc64Table = crc64.MakeTable(crc64.ECMA)
+
+func NewCRC64() hash.Hash64 { return crc64.New(crc64Table) }
+
+func CRC64String(h hash.Hash64) string { return strconv.FormatUint(h.Sum64(), 10) }
+
+func CRC64File(p string) (string, int64, error) {
 	f, e := os.Open(p)
 	if e != nil {
 		return "", 0, e
 	}
 	defer f.Close()
-	h := sha256.New()
+	h := NewCRC64()
 	n, e := io.Copy(h, f)
-	return hex.EncodeToString(h.Sum(nil)), n, e
+	return CRC64String(h), n, e
 }
 func WriteJSON(p string, v any) error {
 	b, e := json.MarshalIndent(v, "", "  ")

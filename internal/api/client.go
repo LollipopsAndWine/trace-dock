@@ -46,9 +46,9 @@ type Credentials struct {
 	Region          string    `json:"region"`
 }
 type Completion struct {
-	ManifestKey  string `json:"manifest_key"`
-	ManifestSHA  string `json:"manifest_sha256"`
-	ManifestSize int64  `json:"manifest_size_bytes"`
+	ManifestKey   string `json:"manifest_key"`
+	ManifestCRC64 string `json:"manifest_crc64"`
+	ManifestSize  int64  `json:"manifest_size_bytes"`
 }
 
 func ValidURL(raw string, allowHTTP bool) error {

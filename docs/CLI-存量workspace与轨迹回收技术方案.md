@@ -1,6 +1,6 @@
 # 存量 workspace 与轨迹回收 CLI 技术方案
 
-**状态**：提案  
+**状态**：MVP 实现基线；非 MVP 扩展内容按规划项处理
 **日期**：2026-11-11  
 **关联文档**：[RFC-01-存量workspace与轨迹回收.md](./RFC-01-存量workspace与轨迹回收.md)、[RFC-01_1000人5万份_资源采购测算.md](./RFC-01_1000人5万份_资源采购测算.md)
 
@@ -8,7 +8,7 @@
 
 本文将 RFC-01 的采集约束落实为可开发、发布和验收的命令行产品，暂命名为 `trace-dock`。用户安装 CLI 后直接在命令行输入 `trace-dock` 启动交互式采集，在本机登记并采集 Codex / Claude Code 的历史 workspace 和轨迹，再将元数据及文件上传到回收服务和对象存储。
 
-RFC-01 是 Codex/Claude 解析、workspace 分类、密钥排除、大文件出列、会话去重及有效性判定的规范来源；本文和 MVP 文档只定义实现与功能范围，不得自行放宽这些数据处理规则。发现新 schema 或调整规则时，先修订 RFC 和对应版本化规则，再更新实现文档。
+RFC-01 是原始需求文档，保留原文，不随实现调整修改。Codex/Claude 元数据提取、workspace 分类、敏感信息检测、大文件处理、去重及有效性判定的当前实现与已确认调整，统一记录在本文和 MVP 技术方案中；与原始需求有差异时，在技术方案说明当前行为，不回写原需求文档。
 
 [MVP 技术方案](./CLI-MVP-技术方案.md) 只实现本文 4.1 的采集上传闭环，使用预登记邮箱/token 和两张表，暂不实现混合工具采集、额外子命令、看板和管理界面。数据处理和验收仍执行相同规则；本文的扩展能力不构成 MVP 可以省略密钥扫描、子 agent、分级、去重或验收的依据。
 
@@ -29,13 +29,13 @@ CLI 检查环境、登记任务并发现候选数据，列出会话及关联 wor
 
 - 安装后通过 `trace-dock` 启动逐步问答式交互；同时支持显式子命令和非交互运行。
 - 自动发现 Codex、Claude 主会话及 Claude 子 agent 轨迹。
-- 按字段形状识别 Codex 新旧 schema；未知格式跳过并记录原因，不猜测解析。
+- 按已知字段尽力提取元数据；未知或混合格式仍允许选择和原样归档，不猜测字段含义。
 - 登记先于采集，记录会话结束时间、采集时间及时间差。
 - 仅读明确范围内的轨迹，不整体打包 `~/.claude` / `~/.codex`，不碰 Codex SQLite/WAL/SHM。
 - 在源机器扫描密钥，命中文件整体排除并登记，不原地替换。
 - 根据 cwd 类型选择 workspace 快照或仅记录路径。
 - 列出发现的会话和关联 workspace，支持全选、部分勾选；只采集并上传用户确认的范围。
-- 统一 ID、SHA-256、对象键，支持幂等、断点续传和去重。
+- 统一 ID、CRC64、对象键，支持幂等、断点续传和去重；选择摘要等控制字段继续使用 SHA-256。
 - 输出按人和工具统计，并支持异机验证文件树和可逆性。
 
 ### 2.2 非目标
@@ -114,7 +114,7 @@ flowchart LR
 6. 看板通过服务器统计 API 展示参与人数、会话数量、上传进度和验收状态。
 ```
 
-待上传内容必须先在源机器完成扫描和 SHA-256 计算。服务端不通过 SSH、共享目录或远程执行访问用户机器。
+待上传内容必须先在源机器完成扫描和 CRC64 计算。服务端不通过 SSH、共享目录或远程执行访问用户机器。
 
 ## 4. 用户体验与命令
 
@@ -136,35 +136,39 @@ CLI 按顺序逐项提问，每次只展开当前问题。用户按 Enter 确认
 
 **③ 勾选部分会话**
 
-方向键移动、空格切换、A 全选或取消全选、斜杠搜索、D 查看当前条目的完整路径与元数据、Enter 确认。以根会话为最小选择单位，关联子 agent 自动包含；同一 workspace 关联多个选中会话时，共用一份采集时快照。零选中时不能继续，选择部分后的其余条目不读取 workspace 内容、不打包、不上传。
+方向键移动、空格切换、A 全选或取消全选、斜杠搜索、D 查看当前条目的完整路径与元数据、Enter 确认。列表上方仅显示已选数量和当前搜索状态，底部显示当前页/总页数及按键说明，并按终端宽度换行；搜索后按匹配结果重新计算页数，搜索输入期间显示对应的输入操作提示。以根会话为最小选择单位，关联子 agent 自动包含；同一 workspace 关联多个选中会话时，共用一份采集时快照。零选中时不能继续，选择部分后的其余条目不读取 workspace 内容、不打包、不上传。
 
 ![步骤三：多选清单中勾选两条会话](assets/trace-dock-cli-selection.png)
 
 **④ 确认选中范围，授权本机采集**
 
-显示选中/未选中主会话数量、关联子 agent 数量、去重后的 workspace 目录及处理结果，再确认是否授权本机读取和打包，默认选择“否”。确认前不读取 workspace 文件内容。cwd 缺失或不适合快照时仍可选择其轨迹，清单明确注明 workspace 仅记路径及原因。
+显示选中/未选中主会话数量、关联子 agent 数量、去重后的 workspace 目录及处理结果，再确认是否授权本机读取和打包，默认选择“是”，用户仍须按 Enter 明确确认。确认前不读取 workspace 文件内容。cwd 缺失或不适合快照时仍可选择其轨迹，清单明确注明 workspace 仅记路径及原因。
 
 ![步骤四：确认所选会话与 workspace 的本机采集授权](assets/trace-dock-cli-consent.png)
 
 **⑤ 扫描打包后，最终确认上传**
 
-完成本机密钥扫描后，显示实际待上传主会话、子 agent、workspace 快照数量、归档体积及排除文件数，并提供本地详细清单路径。用户确认“是”后才申请 STS 并传输内容；选择“否”则保留本地导出任务，稍后可 upload。该确认不会自动加入未选中的会话。
+本机处理进度按会话轨迹和各个 workspace 分别保存，以一次完整状态更新界面；workspace 扫描或并行任务不能覆盖其他阶段的最后状态。检查单个会话时显示该会话 ID 和当前计数；全部检查完后保留“✓ 会话轨迹检查完成 <最后会话 ID> N/N”，其中 N 表示已检查数，包含检查后被排除的轨迹，不表示实际上传数量。即使阶段在两次界面刷新之间快速完成，也必须显示最终会话 ID 和计数。
+
+在用户已明确选择和授权的 workspace 范围内，最多 4 个 worker 并行执行文件扫描、敏感信息检测、暂存及大文件检查；不同 workspace 仍可并行。并行只改变本机处理耗时，不扩大选择范围、不跳过密钥或大文件规则。所有通过检查的文件仍按原相对路径顺序写入确定性 tar.zst，保持目录结构、文件顺序和重复采集的 CRC64 不变。
+
+完成本机密钥扫描后，分别显示已选主会话/关联子 agent 数、实际待上传的各类轨迹数和被排除轨迹数；workspace 快照按目录去重独立计数。确认页按上传内容、上传体积、排除情况三个区域分组，数量与体积分项对齐。主会话或子 agent 轨迹未上传时最多展开三条明细，分别标注项目目录名、完整会话 ID、排除原因和项目快照处理结果；ID 不截短，窄屏自动换行。单条轨迹明细与全部排除记录汇总分开显示；汇总明确覆盖本次所有选中轨迹和去重项目目录，按排除记录计数，包含文件、目录和链接。敏感信息命中文件不上传、大文件正文不上传但保留路径清单、其他规则排除项分别列出。完整明细通过本地清单路径查看。预计上传合计覆盖本次所选内容经排除和压缩后的全部轨迹、快照、manifest 及各类清单，显示轨迹/快照/清单的体积分项；被排除文件和大文件正文不计入。确认时间写入 manifest 后，最终精确总字节数以冻结上传状态和回执为准。确认选项默认“是”，用户仍须按 Enter 明确确认后才申请 STS 并传输内容；选择“否”则保留本地导出任务，稍后可 upload。该确认不会自动加入未选中的会话。
 
 ![步骤五：查看实际体积与排除信息，确认上传](assets/trace-dock-cli-upload-confirm.png)
 
 **⑥ 上传选中内容**
 
-只显示本次选中范围的上传进度；中断后可以恢复，恢复时沿用已确认的清单，不自动扩大范围。
+上传页收起逐项问答记录，显示服务器、工具、已选范围、实际上传的主会话轨迹/子 agent 轨迹/去重快照数量及扫描处理摘要；有轨迹被排除时显示数量提示。绿色传输进度条按本次选中范围的总字节数计算，下方显示已传/总大小、平均速度和预计剩余时间；恢复时已完成对象计入传输进度，但不计入本次传输速度。字节传输结束后立即收起百分比进度条，不保留 100% 完成样式；提交完成校验时切换为“服务端校验（尚未完成）”，持续刷新等待动画和校验等待时长，并明确提示“任务尚未完成，请保持终端开启”。校验阶段不展示未经服务端提供的百分比或预计完成时间；服务端返回 completed 且本地保存回执后才进入结果页。校验失败或中断显示可恢复状态。传输中 Ctrl+C 暂停后保留本地任务；恢复时沿用已确认的清单，不自动扩大范围。
 
 ![步骤六：上传选中内容的进度](assets/trace-dock-cli-upload.png)
 
 **⑦ 校验完成后，显示结果**
 
-OSS 对象校验通过后，显示任务编号、归档数量、排除数量、上传量和 receipt 路径，随后退出。
+OSS 对象校验通过后，清空上传进度与历史问答，保留服务器和身份验证摘要，显示绿色完成状态及对齐的结果表：Job ID、已选/可选主会话数、实际已上传/已选主会话轨迹数、实际已上传/关联子 agent 轨迹数、未选中数量、workspace 快照数、密钥排除文件数、其他排除数、发现/选中/无效主会话数、已传/总数据量及已校验对象数。密钥命中仅统计 exclusions 中的 secret_detected，其他排除单列；所选会话未生成轨迹时单独注明原因，不能算作未选中；部分轨迹被排除时，完成提示只声明实际上传内容校验通过。完整 receipt 路径保留并随终端宽度换行，随后退出。
 
 ![步骤七：已上传选中两条会话，其余两条未上传](assets/trace-dock-cli-complete.png)
 
-发现预览阶段会在本机读取轨迹 JSONL，以提取 cwd 和会话元数据；允许查看分类所需目录元数据，但不读取 workspace 文件内容、不执行密钥扫描、不上传文件。只有用户确认授权后，CLI 才登记所选会话的源路径和时间，再读取所选 workspace 文件、执行密钥扫描并生成归档。完成后显示 Job ID、发现/采集/归档/无效数、排除数、上传量、manifest 摘要和 receipt 路径。
+发现预览阶段会在本机读取轨迹 JSONL，以提取 cwd 和会话元数据；允许查看分类所需目录元数据，但不读取 workspace 文件内容、不执行密钥扫描、不上传文件。只有用户确认授权后，CLI 才登记所选会话的源路径和时间，再读取所选 workspace 文件、执行密钥扫描并生成归档。完成后显示 Job ID、发现/选中/已上传/无效数、排除数、上传量和 receipt 路径；manifest 摘要保存在 receipt 中供复核。
 
 ### 4.2 命令与参数
 
@@ -200,27 +204,34 @@ trace-dock doctor
 
 | 用途 | 默认路径 | 覆盖方式 |
 | --- | --- | --- |
-| Codex | `~/.codex/sessions` | `TRACE_DOCK_CODEX_HOME` |
-| Claude | `~/.claude/projects` | `TRACE_DOCK_CLAUDE_HOME` |
+| Codex | `~/.codex/sessions` | `--codex-home`、`TRACE_DOCK_CODEX_HOME`、config.codex_home、`CODEX_HOME` |
+| Claude | `~/.claude/projects` | `--claude-home`、`TRACE_DOCK_CLAUDE_HOME`、config.claude_home、`CLAUDE_CONFIG_DIR` |
 | CLI 任务目录 | Linux/macOS `~/.trace-dock`；Windows `%LOCALAPPDATA%/trace-dock` | `TRACE_DOCK_HOME` |
 
 配置文件为 `$TRACE_DOCK_HOME/config.json`，仅保存服务器地址和默认策略。优先级：命令行、环境变量、配置文件、内置默认值。
+
+轨迹目录按参数、TRACE_DOCK 专用环境变量、配置字段、工具原生环境变量、默认目录依次取值，允许根目录或 sessions/projects 目录。发现为空时允许本次手动指定，成功后显示实际扫描路径；不会因用户自定义了程序安装位置而扫描该安装目录，也不会自动读取远端或云端文件。客户端会话是否可发现取决于本地落盘位置、布局和读取权限。自定义数据根目录也属于私有状态边界，不作为 workspace 内容采集。
 
 ```text
 <TRACE_DOCK_HOME>/
   config.json
   jobs/<job-id>/
-    discovery.json
+    job.json
     selection.json
     consent.json
     manifest.json
     exclusions.jsonl
     large-files/<workspace-artifact-id>.jsonl
     staging/
+      trajectory-<source-path-hash>.jsonl
+      <workspace-artifact-id>.tar.zst
     upload-state.json
+    collection-complete.json
     receipt.json
     logs.jsonl
 ```
+
+`discovery.json` 不由当前实现生成。`receipt.json` 是服务端校验完成后保存的本地回执；OSS 不上传 receipt。OSS 对象布局见第 9.3 节。
 
 Unix 目录权限 0700、文件 0600；Windows 使用当前用户 ACL。退出时保留任务以支持恢复，不自动清理；删除必须通过显式 purge 命令。
 
@@ -235,7 +246,7 @@ collect(candidate, policy, sink) -> CollectedSession
 reversibility(session) -> ReversibilityReport
 ```
 
-解析不得修改源文件；单文件错误不能中止整个任务；未知 schema 产生 `unsupported_schema`。原始路径、规范化路径、session ID 和 root session ID 分开保存，不把工具原生证据压平到丢失语义的通用字段。
+元数据提取不得修改源文件；单文件解析错误不能中止整个任务；未知 schema 仅记录为 unknown/evidence，不阻止轨迹选择和原文上传。原始路径、规范化路径、session ID 和 root session ID 分开保存，不把工具原生证据压平到丢失语义的通用字段。
 
 ### 5.1 Codex
 
@@ -244,9 +255,9 @@ reversibility(session) -> ReversibilityReport
 | 版本 | 识别形状 | 工具调用 |
 | --- | --- | --- |
 | 旧版 | 顶层 `type == "response_item"` | `apply_patch`、`exec_command` |
-| 新版 | 顶层 `payload.type` 是 `item_completed` / `custom_tool_call` | `exec`；可能有 `ordinal`、`thread_name` |
+| 新版 | `response_item.payload.type=custom_tool_call` / `event_msg.payload.type=item_completed`，或无顶层 type 的独立 payload 形状 | `exec`；可能有 `ordinal`、`thread_name` |
 
-混合形状标记 `mixed_schema`，不视作可解析；未知格式不上传原文并记录跳过原因。Codex 主要只有 unified diff，缺少基线时设置 `reversibility=not_reconstructable`、`archive_eligibility=archive_only`。出现 `compacted` 时设置 `has_compaction=true` 并标记只归档。
+新版封装事件与普通 `response_item` 消息在同一文件中共存时，按新版提取元数据，不判为混合。`response_item` 与无封装 payload 混用记录为 codex.mixed/evidence，未知封装记录为 unknown；这些标签仅供后续分析，不阻止用户选择和原文上传。轨迹通过敏感信息扫描后按原始字节归档，正文解析和下游格式验收独立进行。Codex 主要只有 unified diff，缺少基线时设置 `reversibility=not_reconstructable`、`archive_eligibility=archive_only`。出现 `compacted` 时设置 `has_compaction=true` 并标记只归档。
 
 ### 5.2 Claude
 
@@ -278,34 +289,37 @@ path_only 保留 cwd、存在性、mtime、类型和分类理由；只读取分�
 
 parent 按“多个独立项目的上层目录”识别；不能仅凭 `.git` 数量将单一项目中的子模块误判为 parent。无法安全判断时归为 unknown。
 
+当前实现以 `.git`、`go.mod`、`pyproject.toml`、`package.json`、`Cargo.toml`、`pom.xml`、`CMakeLists.txt`、`setup.py`、`Makefile` 作为项目证据；只有无这些锚点且至少有两个直接子目录带 `.git` 时判为 parent。artifact 目前按 cwd 最后一级名称 `checkpoints`、`checkpoint`、`datasets`、`dataset`、`training_logs`、`artifacts`、`runs` 识别。因此其他名称的日志/产物目录可能成为 unknown/path_only，不能认为完整覆盖了 RFC-01 中所有训练日志目录。
+
 此分级规则自动应用于用户选中的会话，不再提供默认交互中的“workspace 策略”选择。会话清单必须显示处理结果，例如“项目快照”“仅路径：家目录”“仅路径：目录不存在”；用户通过全选/多选决定本次采集哪些会话。选择全部不会把 home、parent、artifact、missing 或未授权的跨人目录升级成快照。
 
 ### 6.2 项目快照
 
-- 不跟随目录外符号链接；只记录链接本身及目标字符串。
+- 不跟随目录外符号链接；安全的目录内符号链接以链接本身及目标字符串写入快照。
 - 归档路径为相对路径，拒绝绝对路径、..、NUL 和规范化后的重复路径。
 - 保留普通文件、目录、符号链接和必要权限。
-- .git/ 目录及 pack 文件不因大文件规则出列，不列入大文件清单；密钥命中仍按整文件排除处理。
-- 密钥命中文件及命中大文件黑名单/阈值的文件从快照出列，分别写入排除清单和大文件清单；不修改源文件。权限不足、特殊设备和循环链接写入排除清单。
-- 使用确定性 tar.zst：相对路径排序，mtime、uid、gid 等非必要字段归一化。
+- `.git/` 目录及 pack 文件不因大文件规则出列，不列入大文件清单；密钥命中仍按整文件排除处理。
+- 当前还会跳过 workspace 内部名为 `.codex`、`.claude`、`.trace-dock`、`.credentials.json`、`logs_2.sqlite*` 的文件或目录；这阻止私有 agent 状态和热数据库进入快照。
+- 密钥命中文件及命中大文件黑名单/阈值的文件从快照出列，写入排除清单；通过密钥扫描的大文件另写入大文件清单。不修改源文件。权限不足、特殊设备和不安全链接写入排除清单。
+- 使用确定性 tar.zst：最多 4 个 worker 并行扫描/暂存文件，随后按原相对路径顺序排序写入，保留目录结构和成员顺序；mtime、uid、gid 等非必要字段归一化。轨迹扫描复制和 workspace 压缩输出分别同步计算 CRC64，避免为摘要再次完整读取已处理文件。
 
 ### 6.3 大文件清单
 
 大文件清单记录从 workspace 快照中出列的文件，供下游按 remote_path 查找或重新获取。每份清单与一个 workspace artifact 关联，关联关系由 manifest 和对象键表达，不在清单行重复存 session ID。文件是否出列严格按 RFC-01 的三层规则判断，配置与 RFC-02 共用同一份版本化规则：
 
 1. **白名单优先**：`.git/` 内部一律保留在 workspace 快照，不放入大文件清单；分析结果等需保留的文件类型也可进入规则白名单。
-2. **黑名单**：按目录和后缀识别模型、权重、数据集和压缩包，例如 *.safetensors、*.pt、*.ckpt、*.onnx、*.gguf、*.parquet、*.zip；命中后从 workspace 快照出列，并记入大文件清单。
-3. **体积兜底**：仅对未命中前两层的文件应用规则配置中的阈值；命中后从快照出列并记入清单。阈值由版本化规则配置，不在 CLI 中写死。
+2. **黑名单**：按目录和明确模型/数据格式识别，例如 datasets/checkpoints 目录、*.safetensors、*.pt、*.pth、*.ckpt、*.onnx、*.gguf、pytorch_model*.bin、*.parquet、*.arrow；命中后从 workspace 快照出列，并记入大文件清单。普通 *.zip/*.tar/*.gz/*.zst/*.7z 及泛化 *.bin 不再按后缀排除，改用体积阈值；site-packages/dist-packages 直接子文件的 .pth 按 Python 路径配置处理，不作为模型权重，其他位置的 .pth 仍保留类型排除。
+3. **体积兜底**：仅对未命中前两层的文件应用规则配置中的阈值；当前大文件规则 `1.2.0` 的默认阈值为 1 GiB（1,073,741,824 bytes），严格超过阈值才从快照出列并记入清单，恰好等于阈值时保留。阈值由服务端版本化规则配置下发，不在 CLI 中写死；服务重启后的新任务使用新默认值，已有任务继续沿用冻结规则。
 
-大文件白名单仅豁免大文件出列，不能绕过密钥扫描。通过密钥扫描且命中白名单的文件留在快照且不出现在大文件清单；命中黑名单或兜底阈值的文件从快照出列，但源文件不删除、不移动、不修改。RFC-01 规定的大文件清单每条只包含 `relative_path` 和 `remote_path`。远端路径优先从轨迹中的 wget、curl、aws s3 cp、scp 等命令提取；否则用 `<machine_name>:<absolute_path>` 表示带机器名的本机绝对路径；无法确定时填 null 并统计，不猜测。规则版本记录在 manifest/任务规则元数据，不扩展清单字段。
+大文件白名单仅豁免大文件出列，不能绕过密钥扫描。通过密钥扫描且命中白名单的文件留在快照且不出现在大文件清单；命中黑名单或兜底阈值的文件从快照出列，但源文件不删除、不移动、不修改。RFC-01 规定的大文件清单每条只包含 `relative_path` 和 `remote_path`。远端路径优先从轨迹中的 wget、curl、aws s3 cp、scp 等命令提取；否则用 `<machine_name>:<absolute_path>` 表示带机器名的本机绝对路径；无法确定时填 null 并统计，不猜测。规则版本记录在 manifest/任务规则元数据，不扩展大文件清单字段。exclusions 用 large_file_type、large_file_size 记录文件类型/目录排除与体积超限；类型/目录优先，两类计数互斥。确认、上传和结果页面的大文件总数后注明“文件类型排除 X 项 · 体积超限 Y 项”，不能把所有出列项描述为超过 1 GiB。
 
 ## 7. 本机密钥扫描
 
-扫描范围包括待上传轨迹 JSONL/工具输出、将进入快照的普通文件、文件名/路径规则、环境文件/凭据/私钥和常见 token 格式。扫描发生在源机器；secret 值不得写入日志、manifest、错误消息或 API 请求，日志仅记录相对路径、文件哈希和规则 ID。
+扫描范围是将上传的轨迹 JSONL 正文、将进入快照的普通文件正文，以及大文件正文（只扫描、不打包）；扫描发生在源机器。检测复用 `guiji` 第二层的 16 条 Gitleaks 高置信度规则，并补充明文凭据兜底，规则集版本为 `2.1.0`。Gitleaks 快照为 CLI 内嵌的 `internal/core/secret-rules.json`，兜底实现在 `internal/core/secret_fallback.go`。兜底检查敏感字段的字符串值和 `os.getenv`、`getenv`、`os.environ.get` 的明文默认值，支持多层 JSON 转义和跨读取边界；跳过变量引用、函数调用、空默认值和明确占位示例。字符串候选长度为 4–1024 bytes，单个编码字面量有 4 KiB 解析上限；不带引号的配置值仅在无法被当成变量引用时检测。不启用字段名强制脱敏、PII/NLP、个人 token 原文匹配或服务端额外正则；不按 `.env`、`.npmrc` 等文件名直接排除。检测只返回是否命中，命中时整个文件不上传，不替换文本；secret 值不会写入排除记录、manifest、错误消息或 API 请求。当前 exclusions 行只有路径、原因及可选 session/workspace ID，没有哈希或 rule ID。匹配按文件内容流式执行，完整 PEM 块和 JWT 跨读取边界仍须检测；字段名本身、变量引用或单独的私钥头不构成命中。
 
-规则至少覆盖私钥头、JWT、云 access key、API key、数据库 URL 密码、.env/.npmrc/.pypirc、云凭据、SSH 私钥、轨迹输出中的密码参数/Bearer token/高熵长串。
+当前内置正则覆盖常见私钥头、部分云/API key、带 password/token 等字段名的值、Bearer token、JWT、URL 内嵌凭据等形状；服务端规则可追加正则。它不等同于完整识别所有 `.env` / `.npmrc` / `.pypirc` 或任意高熵凭据，RFC-01 要求的密钥类型需要通过真实样本持续补强和验收。
 
-命中后整个文件排除，不修改源文件；exclusions.jsonl 记录路径、SHA-256、规则 ID、scope 和 action。若唯一轨迹被排除，保留会话元数据并标记 partial/archive_only。二进制按文件名、扩展名、MIME 判定，高风险默认排除；扫描器异常时 fail-closed。
+命中后整个文件排除，不修改源文件。当前 exclusions.jsonl 每行记录 `path`、`reason`，以及可选的 `session_id` 或 `workspace_artifact_id`；不含 SHA-256、rule ID、scope、action 字段。若轨迹命中密钥，轨迹正文不上传，会话保留在 manifest 并进入 archive_only；当前 validity 只使用 valid / invalid，没有 partial 值。扫描器异常时 fail-closed。
 
 ## 8. Job、manifest 与去重
 
@@ -325,16 +339,16 @@ created -> registered -> discovered -> selecting -> selected
 
 manifest 根记录 manifest_schema、job_id、participant_id、随机 device_id、采集机器名、CLI/adapter 版本、创建/采集时间、consent 版本、选择范围摘要、workspace 分级规则版本、secret rules 版本和 large-file rules 版本。device_id 为随机 UUID，不读取 MAC、硬盘序列号等硬件标识。machine_name 用于 RFC-01 要求的大文件 remote_path。
 
-本地 selection.json 保存选择模式（all / partial）、选中的 (tool, root_session_id)、关联的子轨迹、去重后的 workspace 引用和确认时间。manifest 的 selection 字段记录实际上传范围、选择清单摘要及用户最终上传确认时间；服务端统计发现数、选中数、未选中数、排除数和实际上传数。未选中项的路径与轨迹正文不上传；发现阶段仅上报计数。密钥排除等规则可以缩小实际上传范围，不能扩大；resume 沿用已确认的 selection 和 artifact 清单，不因新发现的会话而扩大范围。
+本地 selection.json 保存选择模式（all / partial）、选中的 (tool, root_session_id)、关联的子轨迹、去重后的 workspace 引用和确认时间。manifest 的 selection 字段记录实际上传范围、选择清单摘要及用户最终上传确认时间；服务端统计发现数、选中数、未选中数、排除数和实际上传数。未选中项的路径与轨迹正文不上传；发现阶段仅上报计数。密钥排除等规则可以缩小实际上传范围，不能扩大；resume 沿用已确认的 selection 和 artifact 清单，不因新发现的会话而扩大范围。manifest 不含邮箱字段，但当前 object_prefix 含参与者 token 原文，故 manifest 和 OSS object key 均暴露该 token；此安全问题尚未解决。
 
-每个 session 至少记录：
+当前 manifest 中每个 session 至少记录：
 
-- (tool, session_id)、root/parent session ID、原轨迹路径、SHA-256 和字节数；
+- (tool, session_id)、root/parent session ID、原轨迹路径和源文件字节数；轨迹 CRC64 存在对应 trajectory artifact 中，不重复写入 session 字段；
 - cwd 原值/规范化值、平台、存在性、workspace 分类及快照策略；
 - 会话结束时间、采集时间及秒差；结束时间未知时填 null 并记录原因，不用采集时间补造或将秒差写成 0；
 - has_compaction、可逆性、有效性、归档资格和跳过原因。
 
-每个 artifact 记录 kind、相对路径、object key、size、SHA-256、上传状态和排除原因。顶层目录 mtime 仅用于诊断，不能代替采集延迟。
+每个 artifact 记录 kind、相对路径、object key、size、CRC64、上传状态和排除原因。顶层目录 mtime 仅用于诊断，不能代替采集延迟。
 
 中断、超时、明确报错或存在不完整终止状态的会话标为 invalid，但仍可归档；invalid 会话不进入题库候选。Codex compacted 会话标记不可重建。Claude 只有在所有 Edit/Write 和子 agent 改动都可解释、没有未覆盖的 shell 写操作，且异机 verifier 比对通过后，才标为可重建。
 
@@ -385,7 +399,9 @@ flowchart LR
 
 ### 9.3 PostgreSQL 表设计
 
-PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据；轨迹正文、workspace 归档及完整清单保存在 OSS。表中不保存原始邀请代码、secret 值、STS 凭证或文件内容。邀请码只保存带服务端 pepper 的摘要，并设置有效期和一次性消费状态。
+本节表结构是完整方案的扩展数据模型，不是当前 MVP 服务端 schema。当前 MVP 仅实现 participants 和 collections 两张表；其中每会话、artifact 索引和排除明细分别保存在 OSS manifest/JSONL，不单独写数据库行。完整方案目标中，PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据；轨迹正文、workspace 归档及完整清单保存在 OSS。表中不保存 secret 值、STS 凭证或文件内容。
+
+当前 MVP 的 participants 和 collections 均包含 created_at、updated_at；updated_at 由数据库触发器在记录实际变化时维护，幂等重试不刷新。历史库初始化时自动补列并按已有业务时间回填，重复初始化不重置既有更新时间；回填不能还原此前未记录的修改历史。
 
 #### 数据表字段
 
@@ -398,6 +414,7 @@ PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据
 | participant_id | text | PK；项目内伪名 ID，不保存姓名或联系方式。 |
 | status | text | NOT NULL；active 或 disabled。 |
 | created_at | timestamptz | NOT NULL；记录创建时间。 |
+| updated_at | timestamptz | NOT NULL；记录实际修改时间，由数据库自动维护。 |
 
 ##### devices — 参与采集的客户端设备，不采集硬件序列号
 
@@ -436,7 +453,7 @@ PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据
 | selection_mode | text | NULL、all 或 partial；用户会话选择模式。 |
 | consent_version | text | 用户确认的授权文案版本。 |
 | manifest_schema | text | manifest 格式版本。 |
-| manifest_sha256 | bytea | NULL 或 32 bytes；最终 manifest 摘要。 |
+| manifest_crc64 | text | NULL 或十进制 CRC64；最终 manifest 对象校验值。 |
 | cli_version | text | NOT NULL；创建任务时的 CLI 版本。 |
 | discovered_count | integer | NOT NULL DEFAULT 0；发现的根会话数。 |
 | selected_count | integer | NOT NULL DEFAULT 0；用户选中的根会话数。 |
@@ -462,7 +479,7 @@ PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据
 | root_session_id | text | NOT NULL；去重及聚合用根会话 ID。 |
 | parent_session_id | text | 子 agent 的父会话 ID；根会话为 NULL。 |
 | schema_version | text | 解析器识别的轨迹 schema 版本。 |
-| trajectory_sha256 | bytea | NULL 或 32 bytes；源轨迹摘要。 |
+| trajectory_crc64 | text | 规划字段；当前 MVP 将轨迹 CRC64 保存在 manifest.artifacts 对应 artifact 中。 |
 | trajectory_size_bytes | bigint | NULL 或非负数；轨迹文件大小。 |
 | cwd_raw | text | 轨迹中的原始 cwd；按敏感路径数据控制访问。 |
 | cwd_normalized | text | 用于比较和 workspace 分类的规范化 cwd。 |
@@ -472,7 +489,7 @@ PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据
 | snapshot_policy | text | CHECK snapshot / path_only；由 cwd 分级规则自动决定。 |
 | selected | boolean | NOT NULL DEFAULT false；是否在用户明确选择范围内。 |
 | has_compaction | boolean | NOT NULL DEFAULT false；轨迹是否发生压缩。 |
-| validity | text | CHECK valid / invalid / partial。 |
+| validity | text | 当前 MVP 仅使用 valid / invalid；partial 未实现。 |
 | reversibility | text | CHECK reconstructable / not_reconstructable / unknown。 |
 | archive_eligibility | text | CHECK candidate / archive_only / excluded。 |
 | session_ended_at | timestamptz | 从轨迹提取的会话结束时间。 |
@@ -489,10 +506,10 @@ PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据
 | --- | --- | --- |
 | artifact_id | text | PK；采集产物 ID；同时 UNIQUE(job_id, artifact_id)，供 session 复合 FK 引用。 |
 | job_id | text | NOT NULL；FK → collections.job_id。 |
-| kind | text | CHECK trajectory / workspace / manifest / exclusions / large_files / receipt。 |
+| kind | text | 当前 MVP artifact 值为 trajectory / workspace / exclusions / large_files；manifest 单独作为完成索引对象，receipt 只保存在客户端本地。 |
 | object_key | text | NOT NULL；OSS 对象键；与 job_id 组合 UNIQUE。 |
 | size_bytes | bigint | NOT NULL、非负；对象字节数。 |
-| sha256 | bytea | NOT NULL、32 bytes；对象摘要。 |
+| crc64 | text | NOT NULL；对象 CRC64（十进制）。 |
 | upload_status | text | CHECK pending / uploading / uploaded / verified / failed。 |
 | verified_at | timestamptz | 服务端 checksum 校验通过时间。 |
 | created_at | timestamptz | NOT NULL；artifact 登记时间。 |
@@ -534,18 +551,38 @@ collections.state 值域为 created、registered、discovered、selecting、sele
 建表、约束、索引和版本化 migration 由服务端代码仓库实现与维护；本文只定义逻辑数据模型，不维护 PostgreSQL DDL。
 
 
-对象键：
+当前 OSS 对象键：
 
 ```text
-collections/<job-id>/manifest.json
-collections/<job-id>/exclusions.jsonl
-collections/<job-id>/workspaces/<workspace-artifact-id>/large-files.jsonl
-collections/<job-id>/sessions/<tool>/<session-id>/trajectory.jsonl
-collections/<job-id>/sessions/<tool>/<session-id>/workspace.tar.zst
-collections/<job-id>/receipt.json
+trajectory/token=<token>/dt=<date>/job=<job-id>/
+├── manifest.json
+│   # 每个 Job 一份；记录所选会话及 artifact 到 OSS 对象键的映射
+├── exclusions.jsonl
+│   # 每个 Job 一份；记录本机排除的路径和原因
+├── sessions/
+│   └── <tool>/
+│       └── <session-id>/
+│           └── trajectory.jsonl
+│               # 每个未被排除的选中会话各一份
+└── workspaces/
+    └── <workspace-artifact-id>/
+        ├── workspace.tar.zst
+        │   # 规范化 cwd 路径哈希生成 artifact ID；同 Job 共用 cwd 的会话共享这份采集时快照
+        └── large-files.jsonl
+            # 与该快照一一对应，每条仅含 relative_path、remote_path
 ```
 
-STS 仅可写当前 job 前缀，默认有效 2 小时。小对象直传、大对象 multipart；part 编号、大小、哈希、ETag、重试次数记录于 upload-state.json。网络错误和 5xx 指数退避；401/403 刷新或终止，429 按 Retry-After 重试。上传前比较远端大小和 SHA-256，一致则跳过。所有 artifact 校验通过后服务端才标记 verified。
+服务端在创建 Job 时冻结日期和唯一 job ID，并将带 `job=<job-id>/` 的完整前缀返回 CLI。manifest、exclusions 和所有 artifact 都在该前缀下；不同 Job 不共享对象键。STS 仅可写当前 Job 前缀。一个 Job 内 cwd 规范化后相同的会话共享一个 workspace artifact：每个 session 各自有 trajectory 对象，workspace 快照与其 large-files 清单各只生成一份；session 通过 manifest 的 `workspace_artifact_id` 引用。workspace 快照代表本次采集时的目录状态。
+
+当前 workspace artifact ID 为 `workspace-<SHA-256(规范化 cwd) 前24位>`；其 hash 用于 Job 内按路径去重，不是文件内容 hash。不同 Job 即使引用相同 cwd，也因外层 job 前缀不同而拥有独立对象。
+
+当前前缀中的 `<token>` 是服务端认证 token 原文，manifest.object_prefix 和 OSS object key 都包含它；这违反第 3 章“原始 token 不进入 OSS”的安全目标。RFC-01 没有规定对象键格式，但生产部署前仍须解决该技术方案内部的安全冲突；当前实现不能视为满足 token 不落 OSS 的要求。
+
+仅支持当前按 Job 隔离的对象格式。旧格式任务直接清理，不提供恢复或迁移；当前格式任务仍支持中断恢复。
+
+RFC-01 要求保存的是会话完成后的 workspace；当前实现只能在用户授权采集时读取 cwd 并制作快照，`collection_delay_seconds` 会记录会话结束到采集的间隔，不能恢复或证明会话结束时目录的历史内容。快照期间按文件检查 inode/size/mtime 并在变化时重试一次，最后生成该次读取内容的 CRC64；它不是对抗并发修改的文件系统原子快照，且若文件在读取期间变化后又恢复原 metadata，可能无法识别。高延迟数据和并发修改都必须作为采集质量限制看待。
+
+`receipt.json` 只保存在本地 Job 目录，不上传 OSS。小对象直传、大对象 multipart；part 编号、大小、CRC64、ETag、重试次数记录于 upload-state.json。网络错误和 5xx 指数退避；401/403 重新申请凭证或终止，429 按 Retry-After 重试。客户端上传前以对象大小和 OSS `HeadObject` 返回的 CRC64 作跳过判断；服务端完成时只读取对象元数据，不下载对象正文。所有 artifact 校验通过后服务端才标记 completed。
 
 离线模式 collect --no-upload 仍须在源机器完成扫描。生成的任务目录可在联网机器上 upload；未扫描目录不得直接上传。
 
@@ -559,7 +596,7 @@ STS 仅可写当前 job 前缀，默认有效 2 小时。小对象直传、大�
 - 扫描/打包期间检查文件变化；TOCTOU 时重新哈希并标记 changed_during_collect。
 - cwd 指向他人目录时预览显示跨人路径并明确授权；未授权只记路径。
 
-故障策略：JSONL 损坏只将当前 session 标为 invalid；未知 schema 不上传原文；cwd 不存在仍可采轨迹；单文件无权限则排除并标 partial；磁盘不足或网络断开保留已完成 staging 并进入 resumable；STS 过期时重新申请；用户取消停止新读取并记 cancelled；secret scanner 异常时当前文件 fail-closed。
+故障策略：JSONL 损坏只将当前 session 标为 invalid，不因分析标签阻止原文归档；未知 schema 保留原文并记录元数据不可识别，仍须通过密钥扫描；cwd 不存在仍可采轨迹；单文件无权限时写入 exclusions 并继续其余快照内容，当前 session validity 仍仅为 valid / invalid，不使用 partial；磁盘不足或网络断开保留 staging 并进入 resumable；STS 过期时重新申请；用户取消停止新读取并记 cancelled；secret scanner 异常时当前文件 fail-closed。
 
 ## 11. 版本、发布和日志
 
@@ -575,7 +612,7 @@ STS 仅可写当前 job 前缀，默认有效 2 小时。小对象直传、大�
 
 ### 12.1 测试
 
-- Codex 新旧/未知/混合 schema；Claude 深层 subagent 发现。
+- Codex 新旧/未知/混合格式的元数据提取；Codex/Claude 未知格式和损坏 JSONL 的原始字节、CRC64 保持不变；未知格式仍执行敏感信息排除；Claude 深层 subagent 发现。
 - cwd 规范化、Windows 大小写、resume/fork 归并、compacted 和损坏 JSONL。
 - workspace 分类、符号链接逃逸、归档路径校验。
 - secret 命中/日志脱敏、大文件规则优先级、remote_path 提取。
@@ -583,14 +620,14 @@ STS 仅可写当前 job 前缀，默认有效 2 小时。小对象直传、大�
 - 假 API/OSS 端到端：授权前仅读取轨迹元数据，不读 workspace 内容、不上传；授权后仅上传允许内容。
 - 验证全选、多选、取消全选、搜索、零选中阻止继续和返回修改范围；发现阶段读取候选轨迹元数据后，未选会话不再进入正文采集，其 workspace 不读取文件内容、不打包、不上传。
 - 验证子 agent 随根会话选择、共享 workspace 去重、密钥排除后实际上传清单更新；用户拒绝最终上传时无内容上传，resume 不扩大已确认范围。
-- 确认 credentials、私钥和 token 不出现在对象或日志；覆盖 401/403/429/5xx 和进程中断恢复。
+- 验收目标要求 credentials、私钥和 token 不出现在对象或日志；当前 token 因 object_prefix 写入 OSS key/manifest，尚未通过此项验收。另覆盖 401/403/429/5xx 和进程中断恢复。
 - 两台应用节点同时接入网关；停止其中一台后验证健康检查摘除、剩余节点继续处理新请求，恢复后验证节点重新加入。
 - 验证请求可在不同应用节点间切换，登记/完成接口幂等，上传对象仍由客户端直传 OSS。
 - Linux、macOS、Windows 各跑至少一条真实文件树 fixture。
 
 ### 12.2 RFC-01 验收闭环
 
-试采抽取规则初判为可倒推候选的 Claude 会话，在异机解包 workspace，纳入主轨迹和全部子 agent，逆序应用文件操作，再比对路径集合、类型、大小和 SHA-256。比对通过的记录才写 reconstructable；失败时先修复规则和适配器，再扩大采集。MVP 也必须执行此验收，可用独立脚本人工完成，不要求先开发看板。
+试采抽取规则初判为可倒推候选的 Claude 会话，在异机解包 workspace，纳入主轨迹和全部子 agent，逆序应用文件操作，再比对路径集合、类型、大小和 CRC64。比对通过的记录才写 reconstructable；失败时先修复规则和适配器，再扩大采集。MVP 也必须执行此验收，可用独立脚本人工完成，不要求先开发看板。
 
 验收报告按人和工具列出会话数、workspace 仍在数、可逆候选数、已验证可重建数、只归档数、无效数、密钥排除数、上传失败数、远端路径缺失数/大文件总数及缺失比例。大文件总数为 0 时比例记 null；未知可逆性不能计入已验证数。统计必须直接来自 manifest。
 

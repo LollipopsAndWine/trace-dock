@@ -41,7 +41,7 @@ func ownedPath(p, home string) bool {
 	}
 	return ownedByCurrentUser(p)
 }
-func Classify(raw, home string) Workspace {
+func Classify(raw, home string, privateRoots ...string) Workspace {
 	w := Workspace{Raw: raw, Normalized: Normalize(raw), Kind: "unknown", Reason: "no_project_evidence", Policy: "path_only"}
 	w.Platform = runtime.GOOS
 	if windowsPath.MatchString(raw) || strings.HasPrefix(raw, `\\`) {
@@ -77,7 +77,13 @@ func Classify(raw, home string) Workspace {
 		return w
 	}
 	// Agent state and our own job directory must never become a workspace snapshot.
-	for _, p := range []string{filepath.Join(home, ".codex"), filepath.Join(home, ".claude"), filepath.Join(home, ".trace-dock"), os.Getenv("TRACE_DOCK_HOME")} {
+	private := []string{filepath.Join(home, ".codex"), filepath.Join(home, ".claude"), filepath.Join(home, ".trace-dock"), os.Getenv("TRACE_DOCK_HOME"), os.Getenv("CODEX_HOME"), os.Getenv("CLAUDE_CONFIG_DIR"), os.Getenv("TRACE_DOCK_CODEX_HOME"), os.Getenv("TRACE_DOCK_CLAUDE_HOME")}
+	for _, p := range append(private, privateRoots...) {
+		if p != "" {
+			if resolved, err := filepath.EvalSymlinks(p); err == nil {
+				p = resolved
+			}
+		}
 		if p != "" && within(real, p) {
 			w.Reason = "contains_private_agent_or_job_state"
 			return w
