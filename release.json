@@ -7,5 +7,5 @@
     "tag": "latest"
   },
   "default_server_url": "https://collector.example.com",
-  "version": "0.1.0"
+  "version": "0.1.4"
 }
