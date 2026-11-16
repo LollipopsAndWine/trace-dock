@@ -12,7 +12,11 @@ var (
 	envCall           = regexp.MustCompile(`\b(?:os\.)?(?:getenv|environ\.get)\s*\(`)
 	secretHint        = regexp.MustCompile(`(?i)(?:password|passwd|pwd|api[_-]?key|api[_-]?token|client[_-]?secret|secret[_-]?key|access[_-]?key[_-]?secret|(?:os\.)?getenv\s*\(|environ\.get\s*\()`)
 	variableReference = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$`)
-	envReference      = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_(?:PASSWORD|PASSWD|PWD|API_KEY|API_TOKEN|SECRET|TOKEN)$`)
+	envReference      = regexp.MustCompile(`^[A-Z][A-Z0-9_]*(?:_(?:PASSWORD|PASSWD|PWD|API_KEY|API_TOKEN|CLIENT_SECRET|SECRET|SECRET_ACCESS_KEY|ACCESS_KEY|ACCESS_KEY_ID|ACCESS_KEY_SECRET|TOKEN))$`)
+	arithmeticValue   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*(?:/[A-Z0-9_]+)+$`)
+	objectIdentifier  = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)+$`)
+	credentialRef     = regexp.MustCompile(`(?i)^(?:aws[_-]?(?:secret[_-]?access[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?key)|secret[_-]?access[_-]?key|challenge[_-]?password|username|accesskeyid|secretaccesskey)$`)
+	codeKeyword       = regexp.MustCompile(`(?i)^(?:try|if|else|elif|except|finally|return|raise|pass|continue|break|class|def|for|while|with):?$`)
 )
 
 // hasLiteralSecret detects values in credential assignments and environment
@@ -171,6 +175,12 @@ func secretLiteral(data []byte, pos int) (string, int, bool) {
 	if variableReference.MatchString(value) || strings.ContainsAny(value, "(\\") {
 		return "", pos, false
 	}
+	// A field lookup, type annotation, mapping expression, or other source
+	// expression is not a literal credential. This avoids flagging dependency
+	// implementation code such as secret_key=credentials["SecretAccessKey"].
+	if strings.ContainsAny(value, "[]{}") {
+		return "", pos, false
+	}
 	return value, end, true
 }
 
@@ -188,7 +198,20 @@ func plausibleSecret(value string) bool {
 	if len(value) < 4 || len(value) > 1024 || strings.ContainsAny(value, " \t\r\n") {
 		return false
 	}
+	if codeKeyword.MatchString(value) {
+		return false
+	}
 	if strings.HasPrefix(value, "$") || strings.HasPrefix(value, "{{") || strings.HasPrefix(value, "<") || strings.HasPrefix(value, "%") || envReference.MatchString(value) {
+		return false
+	}
+	if objectIdentifier.MatchString(value) {
+		return false
+	}
+	switch strings.ToLower(value) {
+	case "username", "password", "secret", "secretkey", "secretaccesskey", "accesskeyid", "awssecretkey", "awsaccesskeyid", "awssecretaccesskey", "clientsecret", "apikey", "modelapikey", "challengepassword":
+		return false
+	}
+	if credentialRef.MatchString(value) {
 		return false
 	}
 	if strings.Trim(value, "*xX._-") == "" {
@@ -196,13 +219,19 @@ func plausibleSecret(value string) bool {
 	}
 	lower := strings.ToLower(value)
 	switch lower {
-	case "none", "null", "undefined", "redacted", "sensitive", "placeholder", "example", "dummy", "your_password", "your_api_key", "test_password", "test_api_key", "very_sensitive_value":
+	case "none", "null", "undefined", "redacted", "sensitive", "placeholder", "example", "dummy", "pasword", "password1", "iamsensitive", "somekindofpassword123!@#", "h]6eszr}vj*m", "your_password", "your_api_key", "test_password", "test_api_key", "very_sensitive_value":
+		return false
+	}
+	if arithmeticValue.MatchString(value) {
 		return false
 	}
 	for _, prefix := range []string{"example_", "example-", "dummy_", "dummy-", "placeholder_", "placeholder-", "your_", "your-"} {
 		if strings.HasPrefix(lower, prefix) {
 			return false
 		}
+	}
+	if strings.HasSuffix(lower, "_goes_here") || strings.HasSuffix(lower, "_example") || strings.HasSuffix(lower, "-example") {
+		return false
 	}
 	return true
 }

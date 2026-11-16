@@ -79,7 +79,7 @@ workspace 自动分级。只有有项目证据且属于当前用户的目录可�
 
 workspace 单文件的大文件默认阈值为 1 GiB（1,073,741,824 bytes），由服务端 `rules.json` 的 `large_file_threshold_bytes` 下发，大文件规则版本为 `1.2.0`。严格超过阈值才按体积排除；`.git/**` 和 `*.analysis.json` 白名单优先，datasets/checkpoints 目录及明确的模型/数据格式黑名单仍可使小文件出列。普通 `.zip/.tar/.gz/.zst/.7z` 压缩包和泛化 `.bin` 不再仅凭后缀出列，只有超过阈值或命中目录规则才出列；保留 `pytorch_model*.bin` 的模型类型规则。Python `site-packages` / `dist-packages` 直接子文件中的 `.pth` 按路径配置处理，不命中模型后缀规则，但仍接受体积和敏感信息检测；其他位置的 `.pth` 模型权重保持类型排除。调整规则后重启服务端，仅新建任务使用新阈值；已有任务沿用创建时冻结的规则。
 
-密钥检测使用 `guiji` 项目第二层的 16 条 Gitleaks 高置信度规则，并补充明文凭据兜底。兜底检测 password/api_key 等敏感字段的字符串值，以及 `os.getenv`、`getenv`、`os.environ.get` 的明文默认值；空值、明确占位示例、变量引用和函数调用不会仅因字段名被排除。它支持轨迹中的多层 JSON 转义；只返回是否命中，不脱敏、不替换或修改源文件及上传内容。匹配凭据格式的演示 token 仍可能命中。不启用 PII/NLP、个人 token 原文匹配或服务端额外正则。规则嵌入 CLI，不需要安装 Gitleaks 或 Python。密钥规则版本为 `2.1.0`，服务端 `trace_dock_server/rules.json` 须使用相同的 `secret_version` 并保持 `secret_patterns: []`，更新后重启服务端。使用旧检测规则的任务需重新创建。
+密钥检测使用 `guiji` 项目第二层的 16 条 Gitleaks 高置信度规则，并补充明文凭据兜底。兜底检测 password/api_key 等敏感字段的字符串值，以及 `os.getenv`、`getenv`、`os.environ.get` 的明文默认值；空值、明确占位示例、变量引用、字段引用、类型注解和函数调用不会仅因字段名被排除。常见公开 AWS 示例值和 SSH `sk-ecdsa` 算法标识不作为真实 token 命中。它支持轨迹中的多层 JSON 转义；只返回是否命中，不脱敏、不替换或修改源文件及上传内容。规则嵌入 CLI，不需要安装 Gitleaks 或 Python。密钥规则版本为 `2.2.0`，服务端 `trace_dock_server/rules.json` 须使用相同的 `secret_version` 并保持 `secret_patterns: []`，更新后重启服务端。使用旧检测规则的任务需重新创建。
 
 服务端位于 `../trace-dock-server`，使用其中的运行说明初始化身份、PostgreSQL 和 OSS。API JSON 契约见 [API-MVP.md](docs/API-MVP.md)。
 

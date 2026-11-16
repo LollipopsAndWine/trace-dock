@@ -315,7 +315,7 @@ parent 按“多个独立项目的上层目录”识别；不能仅凭 `.git` �
 
 ## 7. 本机密钥扫描
 
-扫描范围是将上传的轨迹 JSONL 正文、将进入快照的普通文件正文，以及大文件正文（只扫描、不打包）；扫描发生在源机器。检测复用 `guiji` 第二层的 16 条 Gitleaks 高置信度规则，并补充明文凭据兜底，规则集版本为 `2.1.0`。Gitleaks 快照为 CLI 内嵌的 `internal/core/secret-rules.json`，兜底实现在 `internal/core/secret_fallback.go`。兜底检查敏感字段的字符串值和 `os.getenv`、`getenv`、`os.environ.get` 的明文默认值，支持多层 JSON 转义和跨读取边界；跳过变量引用、函数调用、空默认值和明确占位示例。字符串候选长度为 4–1024 bytes，单个编码字面量有 4 KiB 解析上限；不带引号的配置值仅在无法被当成变量引用时检测。不启用字段名强制脱敏、PII/NLP、个人 token 原文匹配或服务端额外正则；不按 `.env`、`.npmrc` 等文件名直接排除。检测只返回是否命中，命中时整个文件不上传，不替换文本；secret 值不会写入排除记录、manifest、错误消息或 API 请求。当前 exclusions 行只有路径、原因及可选 session/workspace ID，没有哈希或 rule ID。匹配按文件内容流式执行，完整 PEM 块和 JWT 跨读取边界仍须检测；字段名本身、变量引用或单独的私钥头不构成命中。
+扫描范围是将上传的轨迹 JSONL 正文、将进入快照的普通文件正文，以及大文件正文（只扫描、不打包）；扫描发生在源机器。检测复用 `guiji` 第二层的 16 条 Gitleaks 高置信度规则，并补充明文凭据兜底，规则集版本为 `2.2.0`。Gitleaks 快照为 CLI 内嵌的 `internal/core/secret-rules.json`，兜底实现在 `internal/core/secret_fallback.go`。兜底检查敏感字段的字符串值和 `os.getenv`、`getenv`、`os.environ.get` 的明文默认值，支持多层 JSON 转义和跨读取边界；跳过变量引用、字段引用、类型注解、函数调用、空默认值和明确占位示例。常见公开 AWS 示例值、SDK 文档示例密码及 SSH `sk-ecdsa` 协议标识不计为密钥。字符串候选长度为 4–1024 bytes，单个编码字面量有 4 KiB 解析上限；不带引号的配置值仅在无法被当成变量引用时检测。不启用字段名强制脱敏、PII/NLP、个人 token 原文匹配或服务端额外正则；不按 `.env`、`.npmrc` 等文件名直接排除。检测只返回是否命中，命中时整个文件不上传，不替换文本；secret 值不会写入排除记录、manifest、错误消息或 API 请求。当前 exclusions 行只有路径、原因及可选 session/workspace ID，没有哈希或 rule ID。匹配按文件内容流式执行，完整 PEM 块和 JWT 跨读取边界仍须检测；字段名本身、变量引用或单独的私钥头不构成命中。
 
 当前内置正则覆盖常见私钥头、部分云/API key、带 password/token 等字段名的值、Bearer token、JWT、URL 内嵌凭据等形状；服务端规则可追加正则。它不等同于完整识别所有 `.env` / `.npmrc` / `.pypirc` 或任意高熵凭据，RFC-01 要求的密钥类型需要通过真实样本持续补强和验收。
 

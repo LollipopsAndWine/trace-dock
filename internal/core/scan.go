@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -11,13 +12,22 @@ import (
 	"strings"
 )
 
-const SecretRulesVersion = "2.1.0"
+const SecretRulesVersion = "2.2.0"
 
 // secretRulesJSON preserves guiji's second-layer rules. Literal credential
 // fallback checks supplement them without changing the uploaded bytes.
 //
 //go:embed secret-rules.json
 var secretRulesJSON []byte
+
+var knownPublicSecretExamples = []*regexp.Regexp{
+	// WebAuthn/FIDO SSH key algorithm identifiers begin with "sk-" but are
+	// public protocol names, not OpenAI credentials.
+	regexp.MustCompile(`(?i)\bsk-ecdsa-sha2-[A-Za-z0-9@._-]+\b`),
+	regexp.MustCompile(`\b(?:AKIAIOSFODNN7EXAMPLE|AKIA111111111EXAMPLE|AKIA222222222EXAMPLE|AKIAI44QH8DHBEXAMPLE)\b`),
+	regexp.MustCompile(`(?i)\b(?:API_KEY_GOES_HERE|example_test_key|example_password)\b`),
+	regexp.MustCompile(`(?i)\b(?:password1|i_am_sensitive|iamsensitive|somekindofpassword123!@#|h\]6eszr}vj\*m)\b`),
+}
 
 type Scanner struct {
 	pattern *regexp.Regexp
@@ -55,7 +65,34 @@ func loadSecretRules(data []byte) (*Scanner, error) {
 }
 
 func (s *Scanner) Hit(b []byte) bool {
-	return s.pattern.Match(b) || hasLiteralSecret(b)
+	view := maskKnownPublicExamples(b)
+	return s.pattern.Match(view) || (!hasBinaryMarker(view) && hasLiteralSecret(view))
+}
+
+func hasBinaryMarker(data []byte) bool {
+	return bytes.IndexByte(data[:min(len(data), 8192)], 0) >= 0
+}
+
+func maskKnownPublicExamples(data []byte) []byte {
+	var view []byte
+	for _, pattern := range knownPublicSecretExamples {
+		matches := pattern.FindAllIndex(data, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		if view == nil {
+			view = append([]byte(nil), data...)
+		}
+		for _, match := range matches {
+			for i := match[0]; i < match[1]; i++ {
+				view[i] = ' '
+			}
+		}
+	}
+	if view == nil {
+		return data
+	}
+	return view
 }
 
 // Copy scans the exact bytes written to staging. It never emits matched values.
@@ -94,6 +131,7 @@ type scanReader struct {
 	err                             error
 	tail                            []byte
 	fallbackHit                     bool
+	binary                          bool
 }
 
 func (r *scanReader) Read(b []byte) (int, error) {
@@ -107,15 +145,20 @@ func (r *scanReader) Read(b []byte) (int, error) {
 		return 0, ctxErr
 	}
 	if n > 0 {
-		window := append(r.tail, b[:n]...)
-		if hasLiteralSecret(window) {
+		raw := append([]byte(nil), b[:n]...)
+		if r.processed == 0 && hasBinaryMarker(raw) {
+			r.binary = true
+		}
+		scanView := maskKnownPublicExamples(b[:n])
+		window := append(r.tail, scanView...)
+		if !r.binary && hasLiteralSecret(window) {
 			r.fallbackHit = true
 			return 0, io.EOF
 		}
 		// Fallback candidates are bounded to a few KiB. Preserve enough context
 		// for names, calls and literals split across read boundaries.
 		r.tail = append(r.tail[:0], window[max(0, len(window)-(32<<10)):]...)
-		written, writeErr := r.dst.Write(b[:n])
+		written, writeErr := r.dst.Write(raw)
 		if writeErr == nil && written != n {
 			writeErr = io.ErrShortWrite
 		}
@@ -124,6 +167,7 @@ func (r *scanReader) Read(b []byte) (int, error) {
 			return 0, writeErr
 		}
 		r.processed += int64(n)
+		copy(b[:n], scanView)
 		if r.progress != nil && r.processed >= r.nextReport {
 			r.progress(r.processed)
 			r.reported = r.processed

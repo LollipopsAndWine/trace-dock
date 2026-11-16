@@ -68,6 +68,17 @@ func TestLiteralSecretFallbackSkipsReferencesEmptyDefaultsAndExamples(t *testing
 		`password: str`,
 		`token = build_token()`,
 		`api_key = "example_test_key"`,
+		`secret_key=credentials["SecretAccessKey"]`,
+		`secret_key = token["clientSecret"]`,
+		`api_key: Optional[str] = None`,
+		`password: Optional[str]`,
+		`PWD = POWER/2`,
+		"if pwd:\n    try:\n        tarinfo.uname = pwd.getpwuid(tarinfo.uid)[0]",
+		`CHALLENGE_PASSWORD = ObjectIdentifier("1.2.840.113549.1.9.7")`,
+		`AttributeOID.CHALLENGE_PASSWORD: "challengePassword"`,
+		`password = User.password`,
+		`Password = "h]6EszR}vJ*m"`,
+		`api_key = "API_KEY_GOES_HERE"`,
 		`password = "test_password"`,
 		`password = "your_password"`,
 		`password = "<PASSWORD>"`,
@@ -107,5 +118,32 @@ func TestLiteralSecretFallbackCrossesReadBoundariesWithoutChangingCleanFiles(t *
 	hit, err := scanner.CopyContext(context.Background(), &copied, strings.NewReader(clean))
 	if err != nil || hit || copied.String() != clean {
 		t.Fatalf("clean file modified: hit=%t err=%v", hit, err)
+	}
+}
+
+func TestFallbackRejectsRealWorldSDKCodeFalsePositives(t *testing.T) {
+	scanner, err := NewScanner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		`secret_key = credentials["SecretAccessKey"]`,
+		`clientSecret=token["clientSecret"]`,
+		`password: Optional[str]`,
+		`api_key: Optional[str] = None`,
+		`PWD = POWER/2`,
+		`password = User.password`,
+		`user = User(username="scolvin", password="password1")`,
+		`model = Model(password="IAmSensitive", password_bytes=b"IAmSensitiveBytes")`,
+		`"Password": "pasword"`,
+		`"Password": "SomeKindOfPassword123!@#"`,
+		`proxy_password=self._socks_options["password"]`,
+		`api_key: "API_KEY_GOES_HERE"`,
+	} {
+		var copied bytes.Buffer
+		hit, err := scanner.Copy(&copied, strings.NewReader(source))
+		if err != nil || hit || scanner.Hit([]byte(source)) || copied.String() != source {
+			t.Errorf("SDK/example code was flagged or modified: hit=%t err=%v source=%q", hit, err, source)
+		}
 	}
 }

@@ -126,7 +126,7 @@ MVP 不生成评测题，也不在默认交互中自动倒推目录。规则初�
 
 **密钥与本机边界**
 
-- 在源机器扫描待上传的轨迹正文、将进入快照的 workspace 文件及命中大文件规则的文件正文。检测复用 `guiji` 第二层的 16 条 Gitleaks 高置信度规则，涵盖常见服务 token、JWT、完整 PEM 私钥块，并补充明文凭据兜底。兜底检查 password/api_key 等敏感字段的实际字符串值和 `os.getenv`、`getenv`、`os.environ.get` 的明文默认值，跳过空值、明确占位示例、变量引用及函数调用；不会把 `os.getenv`、`MILVUS_API_KEY` 或 `build_token()` 本身当作凭据值。规则集版本为 `2.1.0`，Gitleaks 快照为 CLI 内嵌的 `internal/core/secret-rules.json`。不启用字段名强制脱敏、PII/NLP、个人 token 原文匹配或服务端额外正则；不按 `.env`、`.npmrc`、`.pypirc` 文件名直接排除。检测只判断是否命中，命中时整文件不上传、不原地替换；secret 值不得进入日志、错误消息、manifest 或 API 请求。排除记录只含 path、reason 和可选 session/workspace ID，不含 hash 或 rule ID。格式匹配不验证凭据有效性，符合凭据形状的演示字符串仍可能命中；规则范围不代表覆盖所有凭据。
+- 在源机器扫描待上传的轨迹正文、将进入快照的 workspace 文件及命中大文件规则的文件正文。检测复用 `guiji` 第二层的 16 条 Gitleaks 高置信度规则，涵盖常见服务 token、JWT、完整 PEM 私钥块，并补充明文凭据兜底。兜底检查 password/api_key 等敏感字段的实际字符串值和 `os.getenv`、`getenv`、`os.environ.get` 的明文默认值，跳过空值、明确占位示例、变量引用、字段引用、类型注解及函数调用；不会把 `os.getenv`、`MILVUS_API_KEY` 或 `build_token()` 本身当作凭据值。常见公开 AWS 示例值和 SSH `sk-ecdsa` 协议标识不视为凭据。规则集版本为 `2.2.0`，Gitleaks 快照为 CLI 内嵌的 `internal/core/secret-rules.json`。不启用字段名强制脱敏、PII/NLP、个人 token 原文匹配或服务端额外正则；不按 `.env`、`.npmrc`、`.pypirc` 文件名直接排除。检测只判断是否命中，命中时整文件不上传、不原地替换；secret 值不得进入日志、错误消息、manifest 或 API 请求。排除记录只含 path、reason 和可选 session/workspace ID，不含 hash 或 rule ID。格式匹配不验证凭据有效性，其他符合凭据形状的演示字符串仍可能命中；规则范围不代表覆盖所有凭据。
 - 扫描器异常时对该文件 fail-closed。发现结束后，未选会话不再进入正文采集、密钥扫描或打包；拒绝采集时不扫描或打包 workspace。
 - 不扫描或复制整个 `~/.claude` / `~/.codex`；不读取或复制 Claude `.credentials.json`、shell-snapshots、memories，或 Codex `logs_2.sqlite` 及其 `-wal` / `-shm` 文件。
 - 跨人 workspace 路径必须在清单中明确警示。参与者 token 不代表其拥有他人目录；无额外授权时该 workspace 只记路径，不读取、不快照。

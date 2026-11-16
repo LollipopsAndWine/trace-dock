@@ -24,7 +24,7 @@
 	"object_prefix":"trajectory/token=<token>/dt=2026-11-12/job=<job-id>/",
   "rules":{
     "classification_version":"1.0.0",
-    "secret_version":"2.1.0",
+    "secret_version":"2.2.0",
     "large_file_version":"1.2.0",
     "large_file_threshold_bytes":1073741824,
     "whitelist":[".git/**","*.analysis.json"],
@@ -34,7 +34,7 @@
 }
 ```
 
-实际黑名单以服务端 `trace_dock_server/rules.json` 为准。客户端创建任务时支持分类规则 `1.0.0`、大文件规则 `1.2.0`、密钥规则 `2.1.0`；未知版本停止流程。大文件默认阈值为 1 GiB（1,073,741,824 bytes），仅在文件严格超过阈值时按体积排除，白名单和黑名单优先于体积判断。普通压缩包及泛化 .bin 不按后缀排除；Python site-packages/dist-packages 直接子文件的 .pth 不作为模型权重，仍接受体积检测。排除清单分别使用 large_file_type、large_file_size 记录主要原因；大文件 JSONL 行仍只含 relative_path、remote_path。密钥检测使用 CLI 内嵌的 guiji 第二层 Gitleaks 高置信度规则和明文凭据兜底，`secret_patterns` 必须为空，不加载服务端附加正则。更新服务端规则后须重启服务，已有任务的冻结规则不会变更；使用旧版密钥或大文件规则的任务需重新创建。
+实际黑名单以服务端 `trace_dock_server/rules.json` 为准。客户端创建任务时支持分类规则 `1.0.0`、大文件规则 `1.2.0`、密钥规则 `2.2.0`；未知版本停止流程。大文件默认阈值为 1 GiB（1,073,741,824 bytes），仅在文件严格超过阈值时按体积排除，白名单和黑名单优先于体积判断。普通压缩包及泛化 .bin 不按后缀排除；Python site-packages/dist-packages 直接子文件的 .pth 不作为模型权重，仍接受体积检测。排除清单分别使用 large_file_type、large_file_size 记录主要原因；大文件 JSONL 行仍只含 relative_path、remote_path。密钥检测使用 CLI 内嵌的 guiji 第二层 Gitleaks 高置信度规则和明文凭据兜底，`secret_patterns` 必须为空，不加载服务端附加正则。更新服务端规则后须重启服务，已有任务的冻结规则不会变更；使用旧版密钥或大文件规则的任务需重新创建。
 
 `PATCH /v1/collections/{job_id}` 的三个主要请求：
 

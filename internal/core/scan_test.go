@@ -31,7 +31,7 @@ func TestGitleaksRulesDetectSupportedSecretFormats(t *testing.T) {
 		"linear":         "lin_api_" + strings.Repeat("Ab12", 8),
 		"generic-key-32": "key-" + strings.Repeat("Ab12", 8),
 		"jwt":            "eyJ" + strings.Repeat("A", 12) + "." + strings.Repeat("B", 12) + "." + strings.Repeat("C", 12),
-		"pem":            "-----BEGIN OPENSSH PRIVATE KEY-----\nexample body\n-----END OPENSSH PRIVATE KEY-----",
+		"pem":            "-----BEGIN OPENSSH PRIVATE KEY-----\n" + strings.Repeat("MIIEowIBAAKCAQEA", 3) + "\n-----END OPENSSH PRIVATE KEY-----",
 	}
 	for name, secret := range values {
 		t.Run(name, func(t *testing.T) {
@@ -68,6 +68,50 @@ func TestSecretScannerDoesNotApplyPIIOrGenericFieldRedaction(t *testing.T) {
 		hit, err := scanner.Copy(&copied, strings.NewReader(payload))
 		if err != nil || hit || copied.String() != payload {
 			t.Errorf("clean content changed: hit=%t err=%v", hit, err)
+		}
+	}
+}
+
+func TestSecretScannerIgnoresPublicProtocolAndSDKExamples(t *testing.T) {
+	scanner, err := NewScanner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{
+		`_SK_SSH_ECDSA_NISTP256 = b"sk-ecdsa-sha2-nistp256@openssh.com"`,
+		`key_id = 'AKIAIOSFODNN7EXAMPLE'`,
+		`"AccessKeyId": "AKIAIOSFODNN7EXAMPLE"`,
+		`"AccessKeyId": "AKIA111111111EXAMPLE"`,
+		`"UserId": "AKIAI44QH8DHBEXAMPLE:my-role-session-name"`,
+		`"Password": "h]6EszR}vJ*m"`,
+		`api_key: "API_KEY_GOES_HERE"`,
+		"_SK_START = b\"-----BEGIN OPENSSH PRIVATE KEY-----\"\n" +
+			"_SK_END = b\"-----END OPENSSH PRIVATE KEY-----\"\n" +
+			"_PEM_RC = re.compile(_SK_START + b\"(.*?)\" + _SK_END, re.DOTALL)",
+	} {
+		var copied bytes.Buffer
+		hit, err := scanner.Copy(&copied, strings.NewReader(payload))
+		if err != nil || hit || scanner.Hit([]byte(payload)) || copied.String() != payload {
+			t.Errorf("public example/protocol string was flagged or modified: hit=%t err=%v payload=%q", hit, err, payload)
+		}
+	}
+}
+
+func TestSecretScannerStillDetectsRealCredentialValues(t *testing.T) {
+	scanner, err := NewScanner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		`Authorization: Bearer sk-Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56`,
+		`SECRET_KEY = os.getenv("SECRET_KEY", "UnitSecret9#fixture")`,
+		`API_KEY = os.getenv("API_KEY", "UnitApiKey9#fixture")`,
+	} {
+		if !scanner.Hit([]byte(source)) {
+			t.Errorf("real credential form was missed: %q", source)
+		}
+		if hit, err := scanner.Copy(io.Discard, strings.NewReader(source)); err != nil || !hit {
+			t.Errorf("stream scanner missed credential: hit=%t err=%v", hit, err)
 		}
 	}
 }
