@@ -112,6 +112,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	}
 	u := ui.New()
 	u.SetContext(ctx)
+	defer u.EndFlow()
 	if !u.TTY {
 		return fmt.Errorf("需要交互终端；授权和上传必须分别确认")
 	}
@@ -612,6 +613,9 @@ func exclusionReasonLabel(reason string) string {
 		"scanner_or_copy_failed":             "密钥扫描或复制失败",
 		"changed_during_collect":             "采集期间源文件发生变化",
 		"cross_owner_requires_authorization": "文件所有者不同，未读取",
+		"unreadable":                          "目录项无法读取",
+		"unsafe_path":                         "不安全的相对路径",
+		"unreadable_link":                    "符号链接无法读取",
 		"large_file_type":                    "按文件类型排除正文，仅记路径",
 		"large_file_size":                    "超过体积阈值，仅记路径",
 		"private_agent_state":                "私有 Agent 状态文件，不采集",

@@ -19,6 +19,7 @@ func TestCompletionReplacesUploadAndQuestionHistory(t *testing.T) {
 		Discovered: 4, Selectable: 4, Selected: 2, UploadedMain: 2, UploadedSubagents: 2,
 		SelectedSubagents: 2,
 		Workspaces:        2, SecretExcluded: 2, Excluded: 5, Objects: 9, UploadedBytes: 248 << 20, TotalBytes: 248 << 20,
+		OtherExclusionReasons: "私有 Agent 状态文件，不采集 3 项",
 	})
 	// A late update must not add the upload progress back to the completed screen.
 	u.UploadProgress(248 << 20)
@@ -29,7 +30,7 @@ func TestCompletionReplacesUploadAndQuestionHistory(t *testing.T) {
 			t.Errorf("completed screen retained %q: %s", unwanted, got)
 		}
 	}
-	for _, want := range []string{"07/07", "采集完成 · 上传及校验通过", "2 / 4（另 2 个未选中）", "已上传 2 / 已选 2 份", "子 agent 轨迹", "Workspace 快照", "密钥排除文件", "3（合计 5 项）", "248.00 MiB / 248.00 MiB", "receipt.json"} {
+	for _, want := range []string{"07/07", "采集完成 · 上传及校验通过", "2 / 4（另 2 个未选中）", "已上传 2 / 已选 2 份", "子 agent 轨迹", "Workspace 快照", "密钥排除文件", "3（合计 5 项）", "私有 Agent 状态文件，不采集 3 项", "248.00 MiB / 248.00 MiB", "receipt.json"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("completed screen missing %q: %s", want, got)
 		}

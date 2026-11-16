@@ -160,8 +160,9 @@ func (u *UI) renderScreen(lines []string) {
 	}
 	screen := strings.Join(lines, end) + end
 	if u.TTY && u.ANSI {
-		// Replace the screen at once and erase line tails without a blank frame.
-		screen = "\x1b[2J\x1b[H" + screen + "\x1b[J"
+		// Replace the screen at once, erase line tails, and drop old frames from
+		// scrollback so the terminal contains only the current page.
+		screen = "\x1b[3J\x1b[2J\x1b[H" + screen + "\x1b[J"
 	}
 	_, _ = fmt.Fprint(u.Out, screen)
 }

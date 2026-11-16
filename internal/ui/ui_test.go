@@ -173,6 +173,55 @@ func TestStepKeepsConfirmedChoicesAboveCurrentQuestion(t *testing.T) {
 	}
 }
 
+func TestANSIRenderClearsScrollbackForEachFrame(t *testing.T) {
+	var output strings.Builder
+	u := &UI{Out: &output, TTY: true, ANSI: true}
+	u.BeginFlow("Trace Dock")
+	u.Step("01/07", "选择采集工具")
+	if !strings.Contains(output.String(), "\x1b[3J\x1b[2J\x1b[H") {
+		t.Fatalf("ANSI frame did not clear scrollback before repaint: %q", output.String())
+	}
+}
+
+func TestAlternateScreenIsScopedToInteractiveANSI(t *testing.T) {
+	var output strings.Builder
+	u := &UI{Out: &output, TTY: true, ANSI: true}
+	leave := u.enterAlternateScreen()
+	leave()
+	if got := output.String(); got != "\x1b[?1049h\x1b[2J\x1b[H\x1b[?1049l" {
+		t.Fatalf("alternate screen was not entered and restored: %q", got)
+	}
+
+	output.Reset()
+	u.ANSI = false
+	leave = u.enterAlternateScreen()
+	leave()
+	if got := output.String(); got != "" {
+		t.Fatalf("plain terminal emitted alternate screen controls: %q", got)
+	}
+}
+
+func TestFlowUsesOneAlternateScreenAndLeavesFinalPageVisible(t *testing.T) {
+	var output strings.Builder
+	u := &UI{Out: &output, TTY: true, ANSI: true}
+	u.BeginFlow("Trace Dock")
+	u.Step("01/07", "Connect")
+	u.Step("02/07", "Discover")
+	if got := output.String(); strings.Count(got, "\x1b[?1049h") != 1 || strings.Contains(got, "\x1b[?1049l") {
+		t.Fatalf("flow did not keep a single alternate screen active: %q", got)
+	}
+
+	u.Finish("Complete")
+	got := output.String()
+	if strings.Count(got, "\x1b[?1049h") != 1 || strings.Count(got, "\x1b[?1049l") != 1 {
+		t.Fatalf("flow did not restore the terminal exactly once: %q", got)
+	}
+	leave := strings.Index(got, "\x1b[?1049l")
+	if leave < 0 || !strings.Contains(got[leave:], "Complete") {
+		t.Fatalf("final page was not rendered after leaving alternate screen: %q", got)
+	}
+}
+
 func TestInteractiveFallbackDoesNotEmitANSIWhenConsoleVTFails(t *testing.T) {
 	var output strings.Builder
 	u := &UI{Out: &output, TTY: true, ANSI: false, Color: false}

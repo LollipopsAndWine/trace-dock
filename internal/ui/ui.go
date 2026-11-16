@@ -39,6 +39,7 @@ type UI struct {
 	plainInfo       []string
 	plainActivities map[string]string
 	plainScreen     []string
+	leaveScreen     func()
 	ctx             context.Context
 }
 
@@ -100,6 +101,15 @@ func (u *UI) rawMode() (func(), error) {
 		u.raw = false
 	}, nil
 }
+
+func (u *UI) enterAlternateScreen() func() {
+	if !u.TTY || !u.ANSI {
+		return func() {}
+	}
+	u.Printf("\x1b[?1049h\x1b[2J\x1b[H")
+	return func() { u.Printf("\x1b[?1049l") }
+}
+
 func displayWidth(s string) int {
 	width := 0
 	for _, r := range s {
@@ -460,7 +470,16 @@ func (u *UI) Style(code, text string) string {
 }
 func (u *UI) BeginFlow(title string) {
 	u.heading = title
+	if u.leaveScreen == nil {
+		u.leaveScreen = u.enterAlternateScreen()
+	}
 	u.renderBase()
+}
+func (u *UI) EndFlow() {
+	if u.leaveScreen != nil {
+		u.leaveScreen()
+		u.leaveScreen = nil
+	}
 }
 func (u *UI) Step(number, title string) {
 	u.step, u.title = number, title
@@ -500,6 +519,7 @@ func (u *UI) Success(text string) { u.Record("", text) }
 func (u *UI) Muted(text string)   { u.Info(text) }
 func (u *UI) Finish(lines ...string) {
 	u.info = append([]string(nil), lines...)
+	u.EndFlow()
 	u.renderBase()
 }
 func (u *UI) renderBase() {
@@ -516,7 +536,9 @@ func (u *UI) renderBase() {
 		return
 	}
 	if u.TTY && u.ANSI {
-		u.Printf("\x1b[2J\x1b[H")
+		// Clear both the visible screen and terminal scrollback. Every render is
+		// a complete frame, so older steps must not remain available above it.
+		u.Printf("\x1b[3J\x1b[2J\x1b[H")
 	}
 	if u.heading != "" {
 		u.Println("%s", u.Style("1;36", u.heading))

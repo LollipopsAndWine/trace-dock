@@ -38,6 +38,9 @@ func TestCollectionResultCountsActualArchivesAndSecretExclusions(t *testing.T) {
 	if r.SecretExcluded != 1 || r.Excluded != 3 || r.Selected != 2 || r.Selectable != 138 || r.Discovered != 271 {
 		t.Fatalf("result conflated secret exclusions or discovery totals: %+v", r)
 	}
+	if r.OtherExclusionReasons != "私有 Agent 状态文件，不采集 1 项" {
+		t.Fatalf("other exclusion reasons were not summarized: %q", r.OtherExclusionReasons)
+	}
 	if r.UploadedBytes != 3072 || r.TotalBytes != 3072 || r.Objects != 2 {
 		t.Fatalf("result upload totals incorrect: %+v", r)
 	}

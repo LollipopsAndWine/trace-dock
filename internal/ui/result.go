@@ -11,6 +11,7 @@ type CollectionResult struct {
 	UploadedMain, UploadedSubagents, Workspaces int
 	SelectedSubagents                           int
 	MainExclusionReasons, ChildExclusionReasons string
+	OtherExclusionReasons                       string
 	SecretExcluded, Excluded, Invalid, Objects  int
 	LargeFileRecords, LargeFileTypeRecords      int
 	UploadedBytes, TotalBytes                   int64
@@ -21,6 +22,7 @@ func (u *UI) CompleteCollection(result CollectionResult) {
 	u.history, u.info, u.activities = nil, nil, nil
 	u.activity, u.upload = "", nil
 	u.plainScreen = nil
+	u.EndFlow()
 	u.result = &result
 	u.renderBase()
 }
@@ -92,7 +94,11 @@ func (u *UI) resultLines(width int) []string {
 		row("大文件清单", fmt.Sprintf("%d 项（文件类型排除 %d 项 · 体积超限 %d 项）", r.LargeFileRecords, r.LargeFileTypeRecords, max(0, r.LargeFileRecords-r.LargeFileTypeRecords)), "")
 	}
 	if other := r.Excluded - r.SecretExcluded - r.LargeFileRecords; other > 0 {
-		row("其他排除项", fmt.Sprintf("%d（合计 %d 项）", other, r.Excluded), "")
+		value := fmt.Sprintf("%d（合计 %d 项）", other, r.Excluded)
+		if r.OtherExclusionReasons != "" {
+			value += "；" + r.OtherExclusionReasons
+		}
+		row("其他排除项", value, "")
 	}
 	row("发现/选中/无效", fmt.Sprintf("%d / %d / %d 个主会话", r.Discovered, r.Selected, r.Invalid), "")
 	row("上传数据量", fmt.Sprintf("%s / %s", resultBytes(r.UploadedBytes), resultBytes(r.TotalBytes)), "")
