@@ -16,12 +16,53 @@ func TestNPMManagedUninstallPreservesData(t *testing.T) {
 	t.Setenv("TRACE_DOCK_HOME", dir)
 	t.Setenv("TRACE_DOCK_NPM_PACKAGE", "@example/trace-dock")
 	err := Run(nil)
-	if err == nil || !strings.Contains(err.Error(), "npm uninstall -g @example/trace-dock") {
+	if err == nil || !strings.Contains(err.Error(), "trace-dock uninstall --data") || !strings.Contains(err.Error(), "npm uninstall -g @example/trace-dock") {
 		t.Fatalf("npm uninstall guard: %v", err)
 	}
 	data, err := os.ReadFile(sentinel)
 	if err != nil || string(data) != "user data" {
 		t.Fatal("npm-managed uninstall changed user data")
+	}
+}
+
+func TestRemoveDataAfterConfirmationRequiresTwoYesAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		answers    []bool
+		wantRemove bool
+	}{
+		{name: "cancel second prompt", answers: []bool{true, false}},
+		{name: "confirm both prompts", answers: []bool{true, true}, wantRemove: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "trace-dock")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(dir, "config.json")
+			if err := os.WriteFile(config, []byte("{}"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			removed, err := removeDataAfterConfirmation(dir, func() (bool, error) {
+				answer := tc.answers[calls]
+				calls++
+				return answer, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 || removed != tc.wantRemove {
+				t.Fatalf("calls=%d removed=%t, want calls=2 removed=%t", calls, removed, tc.wantRemove)
+			}
+			_, statErr := os.Stat(config)
+			if tc.wantRemove && !os.IsNotExist(statErr) {
+				t.Fatalf("confirmed cleanup left data behind: %v", statErr)
+			}
+			if !tc.wantRemove && statErr != nil {
+				t.Fatalf("cancelled cleanup removed data: %v", statErr)
+			}
+		})
 	}
 }
 

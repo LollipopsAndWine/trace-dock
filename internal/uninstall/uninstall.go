@@ -30,11 +30,14 @@ func HandleInternal(args []string) (bool, error) {
 
 // Run only removes the current CLI executable. User data is deliberately out of scope.
 func Run(args []string) error {
+	if len(args) == 1 && args[0] == "--data" {
+		return runDataOnly()
+	}
 	if len(args) != 0 {
-		return fmt.Errorf("uninstall 不接受参数")
+		return fmt.Errorf("用法：trace-dock uninstall [--data]")
 	}
 	if name := os.Getenv("TRACE_DOCK_NPM_PACKAGE"); name != "" {
-		return fmt.Errorf("此 CLI 由 npm 管理，请使用 npm uninstall -g %s 卸载；npm 卸载会保留个人配置和任务数据", name)
+		return fmt.Errorf("此 CLI 由 npm 管理；先运行 trace-dock uninstall --data 清理本地数据，再运行 npm uninstall -g %s 移除 CLI", name)
 	}
 	u := ui.New()
 	if !u.TTY {
@@ -78,6 +81,56 @@ func Run(args []string) error {
 	}
 	u.Printf("卸载已安排；用户数据保持不变。\n")
 	return nil
+}
+
+func runDataOnly() error {
+	u := ui.New()
+	if !u.TTY {
+		return fmt.Errorf("uninstall --data 需要交互终端确认")
+	}
+	data, err := dataHome()
+	if err != nil {
+		return err
+	}
+	u.Printf("仅删除 Trace Dock 本地数据目录：\n  %s\n", data)
+	u.Printf("将删除配置、设备 ID、任务和本地归档；不会删除可执行文件或服务端数据。\n")
+	if name := os.Getenv("TRACE_DOCK_NPM_PACKAGE"); name != "" {
+		u.Printf("清理后如需移除 CLI，请运行：npm uninstall -g %s\n", name)
+	}
+	confirmation := 0
+	removed, err := removeDataAfterConfirmation(data, func() (bool, error) {
+		confirmation++
+		if confirmation == 1 {
+			return u.ConfirmNo("准备删除 Trace Dock 本地数据？")
+		}
+		return u.ConfirmNo("再次确认永久删除上述本地配置、设备 ID 和任务归档？")
+	})
+	if err != nil {
+		return err
+	}
+	if !removed {
+		u.Printf("已取消清理。\n")
+		return nil
+	}
+	u.Printf("Trace Dock 本地数据已删除。\n")
+	return nil
+}
+
+func removeDataAfterConfirmation(path string, confirm func() (bool, error)) (bool, error) {
+	if err := validateDataHome(path); err != nil {
+		return false, err
+	}
+	for range 2 {
+		ok, err := confirm()
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	err := os.RemoveAll(path)
+	return err == nil, err
 }
 
 func dataHome() (string, error) {

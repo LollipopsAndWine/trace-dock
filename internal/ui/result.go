@@ -20,6 +20,7 @@ func (u *UI) CompleteCollection(result CollectionResult) {
 	u.step, u.title = "07/07", "所选数据上传及校验完成"
 	u.history, u.info, u.activities = nil, nil, nil
 	u.activity, u.upload = "", nil
+	u.plainScreen = nil
 	u.result = &result
 	u.renderBase()
 }

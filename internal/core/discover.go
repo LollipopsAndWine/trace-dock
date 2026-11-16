@@ -23,11 +23,24 @@ func has(m map[string]any, k string) bool           { _, ok := m[k]; return ok }
 func Discover(tool, home, root string) ([]*Session, error) {
 	var files []string
 	if tool == "codex" {
-		matches, e := filepath.Glob(filepath.Join(root, "[0-9][0-9][0-9][0-9]", "[0-9][0-9]", "[0-9][0-9]", "rollout-*.jsonl"))
-		if e != nil {
-			return nil, e
+		roots := []string{root}
+		if strings.EqualFold(filepath.Base(root), "sessions") {
+			roots = append(roots, filepath.Join(filepath.Dir(root), "archived_sessions"))
 		}
-		files = matches
+		for _, sessionRoot := range roots {
+			err := filepath.WalkDir(sessionRoot, func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return nil
+				}
+				if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(entry.Name(), "rollout-") && strings.HasSuffix(entry.Name(), ".jsonl") {
+					files = append(files, path)
+				}
+				return nil
+			})
+			if err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
+		}
 	} else if tool == "claude" {
 		e := filepath.WalkDir(root, func(p string, d os.DirEntry, e error) error {
 			if e != nil {
@@ -58,38 +71,7 @@ func Discover(tool, home, root string) ([]*Session, error) {
 		s.Workspace = Classify(s.Workspace.Raw, home, s.DataHome)
 		sessions = append(sessions, s)
 	}
-	if tool == "claude" {
-		byID := map[string]*Session{}
-		for _, s := range sessions {
-			byID[s.ID] = s
-		}
-		var roots []*Session
-		for _, s := range sessions {
-			if s.ParentID != "" {
-				if p := byID[s.ParentID]; p != nil && p != s {
-					seen := map[string]bool{s.ID: true}
-					cur := p
-					cycle := false
-					for cur != nil {
-						if seen[cur.ID] {
-							cycle = true
-							break
-						}
-						seen[cur.ID] = true
-						cur = byID[cur.ParentID]
-					}
-					if !cycle {
-						p.Children = append(p.Children, s)
-						continue
-					}
-				}
-				s.SkipReason = "orphan_or_cyclic_subagent"
-				s.Eligibility = "excluded"
-			}
-			roots = append(roots, s)
-		}
-		sessions = roots
-	}
+	sessions = linkSubagents(sessions)
 	sessions = deduplicate(sessions)
 	sort.Slice(sessions, func(i, j int) bool {
 		if sessions[i].EndedAt == nil {
@@ -132,6 +114,7 @@ func parseSession(tool, p string, size int64, home string) *Session {
 	r := bufio.NewReaderSize(f, 64*1024)
 	responseItems, standalonePayload, framedPayload := false, false, false
 	known, broken, complete, compacted, uncertain, edit := false, false, false, false, false, false
+	codexSubagent := false
 	parseError := false
 	cwd := ""
 	for {
@@ -174,6 +157,17 @@ func parseSession(tool, p string, size int64, home string) *Session {
 					}
 					switch typ {
 					case "session_meta", "turn_context":
+						if id := str(payload, "id"); id != "" {
+							s.ID = id
+							s.RootID = id
+						}
+						if parentID := codexParentID(payload); parentID != "" {
+							s.ParentID = parentID
+							s.RootID = parentID
+						}
+						if len(obj(obj(payload, "source"), "subagent")) > 0 || str(payload, "thread_source") == "subagent" {
+							codexSubagent = true
+						}
 						if v := str(payload, "cwd"); v != "" {
 							cwd = v
 						}
@@ -296,6 +290,10 @@ func parseSession(tool, p string, size int64, home string) *Session {
 			break
 		}
 	}
+	if tool == "codex" && codexSubagent && s.ParentID == "" {
+		s.SkipReason = "subagent_parent_unavailable"
+		s.Eligibility = "excluded"
+	}
 	s.Workspace = Classify(cwd, home)
 	s.NonCode = s.Workspace.Kind == "artifact"
 	if tool == "codex" {
@@ -352,6 +350,46 @@ func parseSession(tool, p string, size int64, home string) *Session {
 		s.Evidence = append(s.Evidence, "edit_old_new_present_requires_external_verifier")
 	}
 	return s
+}
+
+func codexParentID(payload map[string]any) string {
+	if parentID := str(payload, "parent_thread_id"); parentID != "" {
+		return parentID
+	}
+	subagent := obj(obj(obj(payload, "source"), "subagent"), "thread_spawn")
+	return str(subagent, "parent_thread_id")
+}
+
+func linkSubagents(sessions []*Session) []*Session {
+	byID := make(map[string]*Session, len(sessions))
+	for _, session := range sessions {
+		byID[session.ID] = session
+	}
+	var roots []*Session
+	for _, session := range sessions {
+		if session.ParentID != "" {
+			parent := byID[session.ParentID]
+			if parent != nil && parent != session {
+				seen := map[string]bool{session.ID: true}
+				cycle := false
+				for current := parent; current != nil; current = byID[current.ParentID] {
+					if seen[current.ID] {
+						cycle = true
+						break
+					}
+					seen[current.ID] = true
+				}
+				if !cycle {
+					parent.Children = append(parent.Children, session)
+					continue
+				}
+			}
+			session.SkipReason = "orphan_or_cyclic_subagent"
+			session.Eligibility = "excluded"
+		}
+		roots = append(roots, session)
+	}
+	return roots
 }
 
 func readEvent(r *bufio.Reader, limit int) ([]byte, error) {

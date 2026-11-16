@@ -2,11 +2,14 @@ package ui
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/trace-dock/trace-dock/internal/core"
@@ -14,29 +17,43 @@ import (
 )
 
 type UI struct {
-	In         *os.File
-	Out        io.Writer
-	reader     *bufio.Reader
-	TTY        bool
-	Color      bool
-	raw        bool
-	heading    string
-	step       string
-	title      string
-	history    []entry
-	info       []string
-	activity   string
-	activities map[string]string
-	upload     *uploadView
-	result     *CollectionResult
+	In              *os.File
+	Out             io.Writer
+	reader          *bufio.Reader
+	TTY             bool
+	ANSI            bool
+	Color           bool
+	raw             bool
+	heading         string
+	step            string
+	title           string
+	history         []entry
+	info            []string
+	activity        string
+	activities      map[string]string
+	upload          *uploadView
+	result          *CollectionResult
+	plainHeading    bool
+	plainHistory    int
+	plainTitle      string
+	plainInfo       []string
+	plainActivities map[string]string
+	plainScreen     []string
+	ctx             context.Context
 }
+
+func (u *UI) SetContext(ctx context.Context) { u.ctx = ctx }
 
 type entry struct{ label, value string }
 
 func New() *UI {
 	tty := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	ansi := configureConsole()
+	if os.Getenv("TERM") == "dumb" {
+		ansi = false
+	}
 	_, noColor := os.LookupEnv("NO_COLOR")
-	return &UI{In: os.Stdin, Out: os.Stdout, reader: bufio.NewReader(os.Stdin), TTY: tty, Color: tty && !noColor && os.Getenv("TERM") != "dumb"}
+	return &UI{In: os.Stdin, Out: os.Stdout, reader: bufio.NewReader(os.Stdin), TTY: tty, ANSI: ansi, Color: tty && ansi && !noColor && os.Getenv("TERM") != "dumb"}
 }
 func (u *UI) Printf(f string, args ...any)  { fmt.Fprintf(u.Out, f, args...) }
 func (u *UI) Println(f string, args ...any) { u.Printf(f+u.lineEnd(), args...) }
@@ -147,10 +164,68 @@ func (u *UI) pageSize(maximum, fixedLines, rowLines int) int {
 
 func workspacePolicy(session *core.Session) string {
 	policy := session.Workspace.Policy
-	if policy == "" {
-		policy = "仅路径"
+	switch policy {
+	case "snapshot":
+		return "项目快照"
+	case "path_only":
+		return "仅记录路径"
+	case "":
+		return "仅记录路径"
 	}
 	return policy
+}
+
+func workspaceKind(session *core.Session) string {
+	switch session.Workspace.Kind {
+	case "project":
+		return "项目目录"
+	case "parent":
+		return "父目录（包含多个项目）"
+	case "home":
+		return "用户主目录"
+	case "artifact":
+		return "数据或产物目录"
+	case "missing":
+		return "目录不存在"
+	case "unknown":
+		return "未识别目录"
+	default:
+		if session.Workspace.Kind == "" {
+			return "未识别目录"
+		}
+		return session.Workspace.Kind
+	}
+}
+
+func workspaceReason(session *core.Session) string {
+	switch session.Workspace.Reason {
+	case "unavailable_path_platform":
+		return "路径无效或与当前平台不匹配"
+	case "directory_missing":
+		return "目录不存在"
+	case "unresolved_path":
+		return "无法解析目录路径"
+	case "user_home":
+		return "用户主目录"
+	case "cross_owner_requires_authorization":
+		return "跨用户目录，未获额外授权"
+	case "contains_private_agent_or_job_state":
+		return "目录内包含私有 agent 或任务状态"
+	case "private_agent_or_job_state":
+		return "属于私有 agent 或任务状态目录"
+	case "artifact_directory":
+		return "数据或产物目录"
+	case "directory_unreadable":
+		return "目录无法读取"
+	case "multiple_independent_projects":
+		return "包含多个独立项目"
+	case "project_marker":
+		return "检测到项目标记"
+	case "no_project_evidence":
+		return "未检测到项目标记"
+	default:
+		return "未识别分类原因"
+	}
 }
 
 func workspacePath(session *core.Session) string {
@@ -163,13 +238,174 @@ func workspacePath(session *core.Session) string {
 func discoverySessionLine(session *core.Session) string {
 	return fmt.Sprintf("%s / %s · %s · %s · %d · %s · %s/%s",
 		session.Tool, clip(clean(session.ID), 16), endedAt(session), humanBytes(session.Size),
-		session.SubagentCount(), workspacePath(session), session.Workspace.Kind, workspacePolicy(session))
+		session.SubagentCount(), workspacePath(session), workspaceKind(session), workspacePolicy(session))
+}
+
+var discoverySessionHeaders = []string{
+	"会话（工具 / ID）", "结束时间", "轨迹大小", "子 agent", "Workspace 路径", "处理方式", "轨迹状态",
+}
+
+func discoverySessionCells(session *core.Session) []string {
+	return []string{
+		fmt.Sprintf("%s / %s", session.Tool, clip(clean(session.ID), 16)),
+		endedAt(session),
+		humanBytes(session.Size),
+		fmt.Sprintf("%d", session.SubagentCount()),
+		workspacePath(session),
+		workspacePolicyCode(session),
+		selectionValidity(session),
+	}
+}
+
+var selectionSessionHeaders = []string{
+	"选择", "会话（工具 / ID）", "结束时间", "轨迹大小", "子 agent", "Workspace 路径", "处理方式", "轨迹状态",
+}
+
+func selectionSessionCells(session *core.Session, mark, validity string) []string {
+	return []string{
+		fmt.Sprintf("[%s]", mark),
+		fmt.Sprintf("%s / %s", session.Tool, clip(clean(session.ID), 16)),
+		endedAt(session),
+		humanBytes(session.Size),
+		fmt.Sprintf("%d", session.SubagentCount()),
+		workspacePath(session),
+		workspacePolicyCode(session),
+		validity,
+	}
 }
 
 func selectionSessionLine(session *core.Session, arrow, mark, validity string) string {
-	return fmt.Sprintf("%s [%s] %s / %s · %s · %s · %d · %s · %s/%s · %s",
-		arrow, mark, session.Tool, clip(clean(session.ID), 16), endedAt(session), humanBytes(session.Size),
-		session.SubagentCount(), workspacePath(session), session.Workspace.Kind, workspacePolicy(session), validity)
+	return arrow + " " + strings.Join(selectionSessionCells(session, mark, validity), " · ")
+}
+
+func workspacePolicyCode(session *core.Session) string {
+	switch session.Workspace.Policy {
+	case "snapshot":
+		return "snapshot"
+	case "path_only", "":
+		return "path_only"
+	default:
+		return "path_only"
+	}
+}
+
+func selectionValidity(session *core.Session) string {
+	switch session.Validity {
+	case "valid":
+		return "normal"
+	case "invalid", "":
+		return "abnormal"
+	default:
+		return "abnormal"
+	}
+}
+
+func tableColumnWidths(headers []string, rows [][]string) []int {
+	widths := make([]int, len(headers))
+	for i, header := range headers {
+		widths[i] = displayWidth(header)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if width := displayWidth(cell); width > widths[i] {
+				widths[i] = width
+			}
+		}
+	}
+	return widths
+}
+
+func workspaceColumnLimit(headers []string, rows [][]string, pathColumn, terminalWidth int) int {
+	widths := make([]int, len(headers))
+	for i, header := range headers {
+		if i != pathColumn {
+			widths[i] = displayWidth(header)
+		}
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if i != pathColumn && displayWidth(cell) > widths[i] {
+				widths[i] = displayWidth(cell)
+			}
+		}
+	}
+	used := 2 * (len(widths) - 1)
+	for i, width := range widths {
+		if i != pathColumn {
+			used += width
+		}
+	}
+	available := terminalWidth - used
+	if available < displayWidth(headers[pathColumn]) {
+		return displayWidth(headers[pathColumn])
+	}
+	return min(44, available)
+}
+
+func clipDisplay(s string, limit int) string {
+	if limit < 1 {
+		return ""
+	}
+	if displayWidth(s) <= limit {
+		return s
+	}
+	if limit == 1 {
+		return "…"
+	}
+	leftLimit := (limit - 1) / 2
+	rightLimit := limit - 1 - leftLimit
+	runes := []rune(s)
+	var left, right strings.Builder
+	used := 0
+	for _, r := range runes {
+		w := displayWidth(string(r))
+		if used+w > leftLimit {
+			break
+		}
+		left.WriteRune(r)
+		used += w
+	}
+	used = 0
+	for i := len(runes) - 1; i >= 0; i-- {
+		r := runes[i]
+		w := displayWidth(string(r))
+		if used+w > rightLimit {
+			break
+		}
+		right.WriteRune(r)
+		used += w
+	}
+	rightRunes := []rune(right.String())
+	for i, j := 0, len(rightRunes)-1; i < j; i, j = i+1, j-1 {
+		rightRunes[i], rightRunes[j] = rightRunes[j], rightRunes[i]
+	}
+	return left.String() + "…" + string(rightRunes)
+}
+
+func formatAlignedRow(cells []string, widths []int) string {
+	return formatAlignedRowWithLeftColumn(cells, widths, -1)
+}
+
+func formatAlignedRowWithLeftColumn(cells []string, widths []int, leftColumn int) string {
+	var line strings.Builder
+	for i, cell := range cells {
+		padding := max(0, widths[i]-displayWidth(cell))
+		left := padding / 2
+		if i == leftColumn {
+			left = 0
+		}
+		if left > 0 {
+			line.WriteString(strings.Repeat(" ", left))
+		}
+		line.WriteString(cell)
+		if right := padding - left; right > 0 {
+			line.WriteString(strings.Repeat(" ", right))
+		}
+		if i < len(cells)-1 {
+			line.WriteString("  ")
+		}
+	}
+	return line.String()
 }
 
 func sessionStatusLabel(session *core.Session) string {
@@ -183,7 +419,18 @@ func sessionStatusLabel(session *core.Session) string {
 	case "valid":
 		return "轨迹有效"
 	case "invalid":
-		return "轨迹无效"
+		switch session.ValidityReason {
+		case "trajectory_parse_error":
+			return "轨迹无效：解析异常"
+		case "completed_with_recorded_errors":
+			return "轨迹无效：有历史中断或报错"
+		case "error_or_interruption_recorded":
+			return "轨迹无效：中断或错误"
+		case "completion_not_observed":
+			return "轨迹无效：未发现结束标记"
+		default:
+			return "轨迹无效：状态证据不足"
+		}
 	default:
 		return "轨迹状态未知"
 	}
@@ -245,6 +492,9 @@ func (u *UI) CompactHistory(labels ...string) {
 		}
 	}
 	u.history = compact
+	if u.TTY && !u.ANSI {
+		u.plainHistory = len(u.history)
+	}
 }
 func (u *UI) Success(text string) { u.Record("", text) }
 func (u *UI) Muted(text string)   { u.Info(text) }
@@ -261,8 +511,12 @@ func (u *UI) renderBase() {
 		u.renderUpload()
 		return
 	}
-	if u.TTY {
-		u.Printf("\x1b[H\x1b[2J")
+	if u.TTY && !u.ANSI {
+		u.renderPlainBase()
+		return
+	}
+	if u.TTY && u.ANSI {
+		u.Printf("\x1b[2J\x1b[H")
 	}
 	if u.heading != "" {
 		u.Println("%s", u.Style("1;36", u.heading))
@@ -302,9 +556,122 @@ func (u *UI) renderBase() {
 		u.Println("%s", u.Style("36", line))
 	}
 }
+
+func (u *UI) renderPlainBase() {
+	if u.heading != "" && !u.plainHeading {
+		u.Println("%s", u.heading)
+		u.plainHeading = true
+	}
+	for u.plainHistory < len(u.history) {
+		item := u.history[u.plainHistory]
+		if item.label == "" {
+			u.Println("✓ %s", item.value)
+		} else {
+			u.Println("✓ %s  %s", item.label, item.value)
+		}
+		u.plainHistory++
+	}
+	step := u.step + " " + u.title
+	if u.title != "" && step != u.plainTitle {
+		u.Break()
+		u.Println("%s", strings.TrimSpace(step))
+		u.plainTitle = step
+		u.plainInfo = nil
+		u.plainActivities = nil
+	}
+	common := 0
+	for common < len(u.info) && common < len(u.plainInfo) && u.info[common] == u.plainInfo[common] {
+		common++
+	}
+	for _, line := range u.info[common:] {
+		u.Println("%s", line)
+	}
+	u.plainInfo = append(u.plainInfo[:0], u.info...)
+	if u.plainActivities == nil {
+		u.plainActivities = map[string]string{}
+	}
+	keys := make([]string, 0, len(u.activities))
+	for key := range u.activities {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		line := u.activities[key]
+		if u.plainActivities[key] != line {
+			u.Println("%s", line)
+			u.plainActivities[key] = line
+		}
+	}
+}
 func (u *UI) Progress(text string) {
 	u.ProgressNamed("main", text)
 }
+
+func (u *UI) StartSpinner(label string) func() {
+	frames := []string{"|", "/", "-", "\\"}
+	if !u.TTY {
+		u.Println("%s", label+"...")
+		return func() {}
+	}
+
+	if !u.ANSI {
+		u.Println("%s", label+"...")
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			elapsed := 0
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					elapsed += 5
+					u.Println("%s", fmt.Sprintf("%s（仍在进行，已等待 %d 秒）", label, elapsed))
+				}
+			}
+		}()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				close(stop)
+				<-done
+			})
+		}
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	update := func(frame int) {
+		u.activity = label + " " + frames[frame%len(frames)]
+		u.renderBase()
+	}
+	update(0)
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(150 * time.Millisecond)
+		defer ticker.Stop()
+		for frame := 1; ; frame++ {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				update(frame)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(stop)
+			<-done
+			u.ProgressDone()
+		})
+	}
+}
+
 func (u *UI) ProgressNamed(key, text string) {
 	if u.TTY {
 		if u.activities == nil {
@@ -439,31 +806,79 @@ func (u *UI) ProgressDone() {
 	}
 }
 func (u *UI) Line(prompt, def string) (string, error) {
+	return u.readLine(prompt, def, false)
+}
+func (u *UI) Token() (string, error) {
+	if !u.TTY {
+		return "", fmt.Errorf("需要交互终端输入 token")
+	}
+	return u.readLine("邀请代码（隐藏输入）", "", true)
+}
+
+func (u *UI) readLine(prompt, def string, hidden bool) (string, error) {
 	u.renderBase()
 	u.Printf("%s", u.Style("1;36", "◆ "+prompt))
 	if def != "" {
 		u.Printf(" [%s]", def)
 	}
 	u.Printf(": ")
-	s, e := u.reader.ReadString('\n')
-	if e != nil {
-		return "", e
+	if u.reader == nil {
+		return "", fmt.Errorf("输入终端不可用")
 	}
-	s = strings.TrimSpace(s)
-	if s == "" {
-		s = def
+	restore := func() {}
+	if u.In != nil && u.TTY {
+		var err error
+		restore, err = u.rawMode()
+		if err != nil {
+			return "", err
+		}
 	}
-	return s, nil
-}
-func (u *UI) Token() (string, error) {
-	if !u.TTY {
-		return "", fmt.Errorf("需要交互终端输入 token")
+	defer restore()
+	var value []rune
+	for {
+		if u.ctx != nil {
+			select {
+			case <-u.ctx.Done():
+				u.Printf("%s", u.lineEnd())
+				return "", context.Canceled
+			default:
+			}
+		}
+		r, _, err := u.reader.ReadRune()
+		if err != nil {
+			return "", err
+		}
+		switch r {
+		case 3, 4:
+			u.Printf("%s", u.lineEnd())
+			return "", context.Canceled
+		case '\r', '\n':
+			u.Printf("%s", u.lineEnd())
+			result := strings.TrimSpace(string(value))
+			if result == "" {
+				result = def
+			}
+			return result, nil
+		case '\b', 0x7f:
+			if len(value) == 0 {
+				continue
+			}
+			last := value[len(value)-1]
+			value = value[:len(value)-1]
+			if !hidden {
+				width := displayWidth(string(last))
+				u.Printf("%s", strings.Repeat("\b", width)+strings.Repeat(" ", width)+strings.Repeat("\b", width))
+			}
+		default:
+			if r < 0x20 || r == 0x7f {
+				continue
+			}
+			value = append(value, r)
+			if !hidden {
+				u.Printf("%s", string(r))
+			}
+		}
 	}
-	u.renderBase()
-	u.Printf("%s", u.Style("1;36", "◆ 邀请代码（隐藏输入）: "))
-	b, e := term.ReadPassword(int(u.In.Fd()))
-	u.Printf("\n")
-	return strings.TrimSpace(string(b)), e
 }
 func (u *UI) Choose(prompt string, items []string, initial int) (int, error) {
 	if !u.TTY {
@@ -552,11 +967,23 @@ func (u *UI) ChooseScope(sessions []*core.Session) (bool, error) {
 		if sizeErr != nil || width < 40 {
 			width = 80
 		}
-		rowLines := 1
-		for _, session := range visible {
-			rowLines = max(rowLines, (displayWidth(discoverySessionLine(session))+width-1)/width)
+		tableCells := make([][]string, len(visible))
+		for i, session := range visible {
+			tableCells[i] = discoverySessionCells(session)
 		}
-		fixedLines := 15
+		columnWidths := tableColumnWidths(discoverySessionHeaders, tableCells)
+		pathColumn := 4
+		columnWidths[pathColumn] = workspaceColumnLimit(discoverySessionHeaders, tableCells, pathColumn, width)
+		for i := range tableCells {
+			tableCells[i][pathColumn] = clipDisplay(tableCells[i][pathColumn], columnWidths[pathColumn])
+		}
+		headerLine := formatAlignedRow(discoverySessionHeaders, columnWidths)
+		rowLines := 1
+		for _, cells := range tableCells {
+			rowLines = max(rowLines, (displayWidth(formatAlignedRow(cells, columnWidths))+width-1)/width)
+		}
+		headerLines := max(1, (displayWidth(headerLine)+width-1)/width)
+		fixedLines := 14 + headerLines
 		if detail {
 			fixedLines += 9
 		}
@@ -577,11 +1004,11 @@ func (u *UI) ChooseScope(sessions []*core.Session) (bool, error) {
 		u.renderBase()
 		u.Break()
 		u.Println("%s", u.Style("1", "◆ 发现清单"))
-		u.Println("会话（工具 / ID） · 结束时间 · 轨迹大小 · 子 agent · Workspace 路径 · 处理方式")
+		u.Println("%s", u.Style("2", headerLine))
 		start := page * pageSize
 		end := min(start+pageSize, len(visible))
 		for i := start; i < end; i++ {
-			u.Println("%s", discoverySessionLine(visible[i]))
+			u.Println("%s", formatAlignedRowWithLeftColumn(tableCells[i], columnWidths, pathColumn))
 		}
 		if len(visible) == 0 {
 			u.Println("%s", u.Style("33", "没有匹配的可采集会话。"))
@@ -597,7 +1024,7 @@ func (u *UI) ChooseScope(sessions []*core.Session) (bool, error) {
 			u.Println("%s", u.Style("1;36", "当前会话详情"))
 			u.Println("ID: %s · 结束时间: %s · 大小: %s", clean(session.ID), endedAt(session), humanBytes(session.Size))
 			u.Println("轨迹: %s", clean(session.Source))
-			u.Println("Workspace: %s · %s · %s", clean(session.Workspace.Raw), session.Workspace.Policy, session.Workspace.Reason)
+			u.Println("Workspace: %s · %s · %s", clean(session.Workspace.Raw), workspacePolicy(session), workspaceReason(session))
 			u.Println("格式: %s · 状态: %s · 子 agent: %d", session.Schema, sessionStatusLabel(session), session.SubagentCount())
 			u.PrintWrapped("判定原因：", sessionValidityExplanation(session))
 			u.PrintWrapped("", "敏感信息检测在授权采集后单独执行，与此状态无关。")
@@ -763,6 +1190,24 @@ func (u *UI) Select(sessions []*core.Session) ([]*core.Session, string, error) {
 		if cursor < 0 {
 			cursor = 0
 		}
+		width, _, sizeErr := term.GetSize(int(os.Stdout.Fd()))
+		if sizeErr != nil || width < 40 {
+			width = 80
+		}
+		tableCells := make([][]string, len(visible))
+		for i, session := range visible {
+			mark := " "
+			if selected[session] {
+				mark = "✓"
+			}
+			tableCells[i] = selectionSessionCells(session, mark, selectionValidity(session))
+		}
+		columnWidths := tableColumnWidths(selectionSessionHeaders, tableCells)
+		columnWidths[5] = workspaceColumnLimit(selectionSessionHeaders, tableCells, 5, width-2)
+		for i := range tableCells {
+			tableCells[i][5] = clipDisplay(tableCells[i][5], columnWidths[5])
+		}
+		headerLine := "  " + formatAlignedRow(selectionSessionHeaders, columnWidths)
 		u.renderBase()
 		searchLabel := clean(query)
 		if search {
@@ -775,21 +1220,18 @@ func (u *UI) Select(sessions []*core.Session) ([]*core.Session, string, error) {
 		u.Break()
 		u.Println("%s", u.Style("1", "◆ 选择要上传的会话"))
 		u.Println("%s", u.Style("2", status))
-		u.Println("选择 · 会话（工具 / ID） · 结束时间 · 轨迹大小 · 子 agent · Workspace 路径 · 处理方式")
-		width, _, sizeErr := term.GetSize(int(os.Stdout.Fd()))
-		if sizeErr != nil || width < 40 {
-			width = 80
-		}
+		u.Println("%s", u.Style("2", headerLine))
 		help := "↑↓ 移动 · 空格选择 · A 全选/取消 · / 搜索 · D 详情 · PgUp/PgDn 翻页 · Enter 确认"
 		if search {
 			help = "输入关键词筛选 · Backspace 删除 · Enter 结束搜索 · Ctrl+C 退出"
 		}
 		helpLines := wrapText(help, width)
 		rowLines := 1
-		for _, session := range visible {
-			rowLines = max(rowLines, (displayWidth(selectionSessionLine(session, ">", "✓", sessionStatusLabel(session)))+width-1)/width)
+		for _, cells := range tableCells {
+			rowLines = max(rowLines, (displayWidth(formatAlignedRow(cells, columnWidths))+2+width-1)/width)
 		}
-		fixedLines := 10 + len(helpLines)
+		headerLines := max(1, (displayWidth(headerLine)+width-1)/width)
+		fixedLines := 10 + len(helpLines) + headerLines - 1
 		if detail {
 			fixedLines += 9
 		}
@@ -802,22 +1244,15 @@ func (u *UI) Select(sessions []*core.Session) ([]*core.Session, string, error) {
 			end = len(visible)
 		}
 		for i := start; i < end; i++ {
-			s := visible[i]
-			mark := " "
-			if selected[s] {
-				mark = u.Style("1;32", "✓")
-			}
 			arrow := " "
 			if i == cursor {
-				arrow = u.Style("1;36", ">")
+				arrow = ">"
 			}
-			validity := sessionStatusLabel(s)
-			if s.Validity == "valid" && s.Schema != "unknown" && s.Schema != "codex.mixed" {
-				validity = u.Style("32", validity)
-			} else {
-				validity = u.Style("33", validity)
+			line := arrow + " " + formatAlignedRowWithLeftColumn(tableCells[i], columnWidths, 5)
+			if i == cursor {
+				line = u.Style("1;36", line)
 			}
-			u.Println("%s", selectionSessionLine(s, arrow, mark, validity))
+			u.Println("%s", line)
 		}
 		if detail && len(visible) > 0 {
 			s := visible[cursor]
@@ -825,8 +1260,8 @@ func (u *UI) Select(sessions []*core.Session) ([]*core.Session, string, error) {
 			u.Println("%s", u.Style("1;36", "当前会话详情"))
 			u.Println("ID: %s · 结束时间: %s · 大小: %s", clean(s.ID), endedAt(s), humanBytes(s.Size))
 			u.Println("轨迹: %s", clean(s.Source))
-			u.Println("Workspace: %s · %s · %s", clean(s.Workspace.Raw), s.Workspace.Policy, s.Workspace.Reason)
-			u.Println("格式: %s · 状态: %s · 子 agent: %d", s.Schema, sessionStatusLabel(s), s.SubagentCount())
+			u.Println("Workspace: %s · %s · %s", clean(s.Workspace.Raw), workspacePolicy(s), workspaceReason(s))
+			u.Println("格式: %s · 状态: %s · 子 agent: %d", s.Schema, selectionValidity(s), s.SubagentCount())
 			u.PrintWrapped("判定原因：", sessionValidityExplanation(s))
 			u.PrintWrapped("", "敏感信息检测在授权采集后单独执行，与此状态无关。")
 		}

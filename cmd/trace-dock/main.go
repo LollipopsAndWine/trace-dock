@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/trace-dock/trace-dock/internal/app"
 	"os"
@@ -14,6 +15,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if err := app.Run(ctx, os.Args[1:], version); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		fmt.Fprintln(os.Stderr, "trace-dock:", err)
 		os.Exit(1)
 	}

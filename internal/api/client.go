@@ -57,7 +57,7 @@ func ValidURL(raw string, allowHTTP bool) error {
 		return fmt.Errorf("无效的服务地址")
 	}
 	if u.Scheme != "https" {
-		if !(allowHTTP && u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1")) {
+		if !(allowHTTP && u.Scheme == "http") {
 			return fmt.Errorf("服务地址必须使用 HTTPS")
 		}
 	}

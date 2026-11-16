@@ -35,6 +35,7 @@ func (u *UI) BeginUpload(summary UploadSummary) {
 	u.step, u.title = "06/07", "上传选中内容"
 	u.result = nil
 	u.info, u.activities, u.activity = nil, nil, ""
+	u.plainScreen = nil
 	u.upload = &uploadView{summary: summary, transferred: summary.UploadedBytes, started: now, updated: now}
 	u.renderBase()
 }
@@ -143,14 +144,24 @@ func (u *UI) screenWidth() int {
 }
 
 func (u *UI) renderScreen(lines []string) {
+	if u.TTY && !u.ANSI {
+		common := min(len(lines), len(u.plainScreen))
+		for i, line := range lines {
+			if i >= common || line != u.plainScreen[i] {
+				u.Println("%s", line)
+			}
+		}
+		u.plainScreen = append(u.plainScreen[:0], lines...)
+		return
+	}
 	end := u.lineEnd()
-	if u.TTY {
+	if u.TTY && u.ANSI {
 		end = "\x1b[K" + end
 	}
 	screen := strings.Join(lines, end) + end
-	if u.TTY {
+	if u.TTY && u.ANSI {
 		// Replace the screen at once and erase line tails without a blank frame.
-		screen = "\x1b[H" + screen + "\x1b[J"
+		screen = "\x1b[2J\x1b[H" + screen + "\x1b[J"
 	}
 	_, _ = fmt.Fprint(u.Out, screen)
 }

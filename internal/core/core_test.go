@@ -67,6 +67,71 @@ func TestCodexSchemasAndDamage(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentsLinkFromSessionMetadataAndArchivedRoot(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".codex", "sessions")
+	project := filepath.Join(home, "code")
+	const rootID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const childID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	const grandchildID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	const legacyID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	const orphanID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	const unlinkedID = "99999999-9999-4999-8999-999999999999"
+
+	writeSession := func(dir, id string, metadata map[string]any) {
+		t.Helper()
+		metadata["id"] = id
+		metadata["cwd"] = project
+		meta, err := json.Marshal(map[string]any{"type": "session_meta", "payload": metadata})
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := string(meta) + "\n" + `{"type":"event_msg","payload":{"type":"task_complete"}}` + "\n"
+		fixture(t, filepath.Join(dir, "rollout-"+id+".jsonl"), content)
+	}
+	spawnSource := func(parent string) map[string]any {
+		return map[string]any{"subagent": map[string]any{"thread_spawn": map[string]any{
+			"parent_thread_id": parent,
+			"depth":            1,
+		}}}
+	}
+
+	writeSession(filepath.Join(root, "2026", "11", "15"), rootID, map[string]any{"source": "cli"})
+	writeSession(filepath.Join(root, "2026", "11", "15"), childID, map[string]any{"source": spawnSource(rootID)})
+	writeSession(filepath.Join(root, "2026", "11", "15"), grandchildID, map[string]any{"source": spawnSource(childID)})
+	writeSession(filepath.Join(home, ".codex", "archived_sessions", "2026", "11", "15"), legacyID, map[string]any{"parent_thread_id": rootID})
+	writeSession(filepath.Join(root, "2026", "11", "15"), orphanID, map[string]any{"source": spawnSource("ffffffff-ffff-4fff-8fff-ffffffffffff")})
+	writeSession(filepath.Join(root, "2026", "11", "15"), unlinkedID, map[string]any{"thread_source": "subagent"})
+
+	sessions, err := Discover("codex", home, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rootSession, orphan, unlinked *Session
+	for _, session := range sessions {
+		switch session.ID {
+		case rootID:
+			rootSession = session
+		case orphanID:
+			orphan = session
+		case unlinkedID:
+			unlinked = session
+		}
+	}
+	if rootSession == nil || rootSession.SubagentCount() != 3 {
+		t.Fatalf("root should contain nested and archived subagents: %+v", rootSession)
+	}
+	if len(rootSession.Children) != 2 || rootSession.Children[0].ID == grandchildID {
+		t.Fatalf("root should attach its direct child threads: %+v", rootSession.Children)
+	}
+	if orphan == nil || orphan.Eligibility != "excluded" || orphan.SkipReason != "orphan_or_cyclic_subagent" {
+		t.Fatalf("orphan child should not become an independently selectable root: %+v", orphan)
+	}
+	if unlinked == nil || unlinked.Eligibility != "excluded" || unlinked.SkipReason != "subagent_parent_unavailable" {
+		t.Fatalf("subagent missing its parent id should not become an independently selectable root: %+v", unlinked)
+	}
+}
+
 func TestClaudeChildrenDedupAndWindows(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".claude", "projects", "---")
@@ -79,13 +144,21 @@ func TestClaudeChildrenDedupAndWindows(t *testing.T) {
 	fixture(t, filepath.Join(root, "root.jsonl"), log(""))
 	fixture(t, filepath.Join(root, "root", "subagents", "agent-a.jsonl"), log(""))
 	fixture(t, filepath.Join(root, "deeper", "fork.jsonl"), log("{\"type\":\"system\",\"forkedFromSessionId\":\"root\"}\n"))
+	fixture(t, filepath.Join(root, "explicit-agent.jsonl"), log("{\"type\":\"system\",\"parentSessionId\":\"root\"}\n"))
 	sessions, e := Discover("claude", home, filepath.Dir(root))
 	if e != nil || len(sessions) != 1 {
 		t.Fatalf("%v %+v", e, sessions)
 	}
 	s := sessions[0]
-	if s.ID != "fork" || s.RootID != "root" || len(s.Aliases) != 1 || len(s.Children) != 1 || s.Workspace.Raw != project {
+	if s.ID != "fork" || s.RootID != "root" || len(s.Aliases) != 1 || len(s.Children) != 2 || s.Workspace.Raw != project {
 		t.Fatalf("%+v", s)
+	}
+	childIDs := map[string]bool{}
+	for _, child := range s.Children {
+		childIDs[child.ID] = true
+	}
+	if !childIDs["agent-a"] || !childIDs["explicit-agent"] {
+		t.Fatalf("Claude child transcripts were not associated by directory and explicit parent ID: %+v", s.Children)
 	}
 	if Normalize(`C:\Users\Name\Repo`) != Normalize(`c:\users\name\repo`) {
 		t.Fatal("Windows path comparison")

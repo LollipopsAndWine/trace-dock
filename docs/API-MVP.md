@@ -1,6 +1,6 @@
 # CLI / server MVP JSON 契约 v1
 
-所有 API 请求使用 `Authorization: Bearer <个人 token>` 和 JSON；身份验证响应不返回 token。CLI 拒绝重定向，生产 API/OSS 使用 HTTPS。只有显式本地开发模式允许回环 HTTP。服务端仅接收控制字段和 manifest 摘要，文件正文由 CLI 直传 OSS。当前创建任务返回的 object_prefix 包含 token 原文，该值会进入 OSS object key 和 manifest；这与 token 不应进入 OSS 的安全目标冲突，属于待解决的设计问题。
+所有 API 请求使用 `Authorization: Bearer <个人 token>` 和 JSON；身份验证响应不返回 token。CLI 拒绝重定向，生产 API/OSS 使用 HTTPS。仅测试时可通过 `--allow-http` 或 `TRACE_DOCK_ALLOW_HTTP=1` 显式允许 HTTP 服务地址。服务端仅接收控制字段和 manifest 摘要，文件正文由 CLI 直传 OSS。当前创建任务返回的 object_prefix 包含 token 原文，该值会进入 OSS object key 和 manifest；这与 token 不应进入 OSS 的安全目标冲突，属于待解决的设计问题。
 
 仅支持当前按 Job 隔离的对象格式。旧格式任务直接清理，不提供恢复或迁移；当前格式任务仍支持中断恢复。
 

@@ -6,18 +6,21 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/trace-dock/trace-dock/internal/api"
-	"github.com/trace-dock/trace-dock/internal/core"
-	"github.com/trace-dock/trace-dock/internal/ui"
-	"github.com/trace-dock/trace-dock/internal/uninstall"
-	"github.com/trace-dock/trace-dock/internal/upload"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"text/tabwriter"
 	"time"
+
+	"github.com/trace-dock/trace-dock/internal/api"
+	"github.com/trace-dock/trace-dock/internal/core"
+	"github.com/trace-dock/trace-dock/internal/ui"
+	"github.com/trace-dock/trace-dock/internal/uninstall"
+	"github.com/trace-dock/trace-dock/internal/upload"
 )
 
 var defaultServer = "https://collector.example.com"
@@ -34,6 +37,50 @@ type localJob struct {
 	Operation   api.Create `json:"create_request"`
 }
 
+func writeUsage(w io.Writer, version string) {
+	fmt.Fprintf(w, "trace-dock %s\n", version)
+	fmt.Fprintln(w, "选择并归档 Codex 或 Claude Code 历史会话。")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  trace-dock [OPTIONS]")
+	fmt.Fprintln(w, "  trace-dock uninstall [--data]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Options:")
+	options := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(options, "  --server URL\t本次使用的服务端地址")
+	fmt.Fprintln(options, "  --allow-http\t测试环境允许使用 HTTP")
+	fmt.Fprintln(options, "  --codex-home PATH\tCodex 数据目录或 sessions 目录")
+	fmt.Fprintln(options, "  --claude-home PATH\tClaude 数据目录或 projects 目录")
+	fmt.Fprintln(options, "  --version\t显示版本并退出")
+	fmt.Fprintln(options, "  -h, --help\t显示帮助并退出")
+	_ = options.Flush()
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Environment:")
+	environment := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(environment, "  TRACE_DOCK_SERVER\t默认服务端地址")
+	fmt.Fprintln(environment, "  TRACE_DOCK_ALLOW_HTTP=1\t测试环境允许 HTTP")
+	fmt.Fprintln(environment, "  TRACE_DOCK_HOME\t配置与任务目录")
+	fmt.Fprintln(environment, "  CODEX_HOME\tCodex 数据目录")
+	fmt.Fprintln(environment, "  CLAUDE_CONFIG_DIR\tClaude Code 数据目录")
+	_ = environment.Flush()
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Configuration:")
+	fmt.Fprintln(w, "  $TRACE_DOCK_HOME/config.json")
+	fmt.Fprintln(w, "  保存服务地址和自定义轨迹目录等非敏感设置。")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Examples:")
+	fmt.Fprintln(w, "  trace-dock")
+	fmt.Fprintln(w, "  trace-dock --server https://collector.example.com")
+	fmt.Fprintln(w, "  trace-dock --allow-http --server http://127.0.0.1:8080")
+	fmt.Fprintln(w, "  trace-dock uninstall")
+	fmt.Fprintln(w, "  trace-dock uninstall --data")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Notes:")
+	fmt.Fprintln(w, "  生产环境必须使用 HTTPS；--allow-http 仅用于测试。")
+	fmt.Fprintln(w, "  Token 仅在终端交互输入，不会保存。重复运行可恢复未完成任务。")
+	fmt.Fprintln(w, "  npm 安装请用 uninstall --data 清理本地数据，再用 npm uninstall 移除 CLI。")
+}
+
 func Run(ctx context.Context, args []string, version string) error {
 	if handled, err := uninstall.HandleInternal(args); handled {
 		return err
@@ -42,12 +89,13 @@ func Run(ctx context.Context, args []string, version string) error {
 		return uninstall.Run(args[1:])
 	}
 	flags := flag.NewFlagSet("trace-dock", flag.ContinueOnError)
-	serverFlag := flags.String("server", "", "本次使用的 HTTPS 服务地址")
+	serverFlag := flags.String("server", "", "本次使用的服务地址（生产环境使用 HTTPS）")
 	codexHomeFlag := flags.String("codex-home", "", "Codex 数据根目录或 sessions 目录")
 	claudeHomeFlag := flags.String("claude-home", "", "Claude Code 数据根目录或 projects 目录")
+	allowHTTPFlag := flags.Bool("allow-http", false, "允许 HTTP 服务地址（仅测试环境）")
 	ver := flags.Bool("version", false, "显示版本")
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "trace-dock — 逐项选择 Codex 或 Claude 历史会话并安全归档上传\n用法: trace-dock [--server https://collector.example.com] [--codex-home PATH] [--claude-home PATH] [--version]\n       trace-dock uninstall\n配置: TRACE_DOCK_HOME/config.json；TRACE_DOCK_SERVER；token 仅在终端输入。\n轨迹路径自动读取 CODEX_HOME / CLAUDE_CONFIG_DIR，也可用 --codex-home / --claude-home 显式指定。\n再次运行可恢复已打包任务；恢复使用原选择和归档。uninstall 需要交互确认，只删除 CLI 及 CLI 专属数据。")
+		writeUsage(flags.Output(), version)
 	}
 	if e := flags.Parse(args); e != nil {
 		if e == flag.ErrHelp {
@@ -63,6 +111,7 @@ func Run(ctx context.Context, args []string, version string) error {
 		return fmt.Errorf("MVP 仅支持默认交互入口，参见 --help")
 	}
 	u := ui.New()
+	u.SetContext(ctx)
 	if !u.TTY {
 		return fmt.Errorf("需要交互终端；授权和上传必须分别确认")
 	}
@@ -102,7 +151,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	if e != nil {
 		return e
 	}
-	allowHTTP := os.Getenv("TRACE_DOCK_ALLOW_HTTP") == "1"
+	allowHTTP := httpAllowed(*allowHTTPFlag)
 	if e = api.ValidURL(chosen, allowHTTP); e != nil {
 		return e
 	}
@@ -256,7 +305,10 @@ func Run(ctx context.Context, args []string, version string) error {
 	if e != nil {
 		return e
 	}
-	if e = client.Patch(ctx, job.JobID, map[string]any{"discovered_count": len(sessions)}); e != nil {
+	stopSpinner := u.StartSpinner("正在整理发现清单")
+	e = client.Patch(ctx, job.JobID, map[string]any{"discovered_count": len(sessions)})
+	stopSpinner()
+	if e != nil {
 		return e
 	}
 	discovery := discoverySummary(sessions)
@@ -337,16 +389,28 @@ func Run(ctx context.Context, args []string, version string) error {
 	return finish(ctx, u, client, dir, job.JobID, allowHTTP)
 }
 
+func httpAllowed(flag bool) bool {
+	return flag || os.Getenv("TRACE_DOCK_ALLOW_HTTP") == "1"
+}
+
 func validObjectPrefix(prefix, jobID string) bool {
 	return strings.HasPrefix(prefix, "trajectory/token=") &&
 		strings.Contains(prefix, "/dt=") &&
 		strings.HasSuffix(prefix, "/job="+jobID+"/")
 }
 
+func workspacePolicyLabel(policy string) string {
+	if policy == "snapshot" {
+		return "项目快照（读取并打包符合规则的文件）"
+	}
+	return "仅记录路径（不读取目录内容）"
+}
+
 func selectedScopeSummary(sessions []*core.Session, eligible int) []string {
 	policies := map[string]int{}
 	paths := map[string]bool{}
-	examples := []string{}
+	examples := map[string][]string{}
+	exampleCount := 0
 	children, crossOwner := 0, 0
 	var visit func(*core.Session, bool)
 	visit = func(session *core.Session, child bool) {
@@ -363,8 +427,9 @@ func selectedScopeSummary(sessions []*core.Session, eligible int) []string {
 		if !paths[path] {
 			paths[path] = true
 			policies[session.Workspace.Policy]++
-			if len(examples) < 5 {
-				examples = append(examples, path+" · "+session.Workspace.Policy)
+			if exampleCount < 5 {
+				examples[session.Workspace.Policy] = append(examples[session.Workspace.Policy], path)
+				exampleCount++
 			}
 		}
 		for _, nested := range session.Children {
@@ -383,14 +448,22 @@ func selectedScopeSummary(sessions []*core.Session, eligible int) []string {
 		policyNames = append(policyNames, policy)
 	}
 	sort.Strings(policyNames)
+	lines = append(lines, fmt.Sprintf("workspace 路径明细（共 %d 个，按处理方式分组）：", len(paths)))
+	lines = append(lines, "项目快照会读取并打包符合规则的文件；仅记录路径不会读取目录内容。")
 	for _, policy := range policyNames {
-		lines = append(lines, fmt.Sprintf("处理方式：%s %d 个", policy, policies[policy]))
+		shown := len(examples[policy])
+		label := workspacePolicyLabel(policy)
+		if shown < policies[policy] {
+			lines = append(lines, fmt.Sprintf("  %s：%d 个路径（列出 %d 个）", label, policies[policy], shown))
+		} else {
+			lines = append(lines, fmt.Sprintf("  %s：%d 个路径", label, policies[policy]))
+		}
+		for _, path := range examples[policy] {
+			lines = append(lines, ui.WrapLines("    ", safe(path))...)
+		}
 	}
-	for _, example := range examples {
-		lines = append(lines, ui.WrapLines("  ", safe(example))...)
-	}
-	if len(paths) > len(examples) {
-		lines = append(lines, fmt.Sprintf("  其余 %d 个路径可在授权后查看本机清单。", len(paths)-len(examples)))
+	if len(paths) > exampleCount {
+		lines = append(lines, fmt.Sprintf("  其余 %d 个路径可在授权后查看本机清单。", len(paths)-exampleCount))
 	}
 	if crossOwner > 0 {
 		lines = append(lines, fmt.Sprintf("警示：%d 个会话涉及跨人目录，只记录路径，不读取其内容。", crossOwner))

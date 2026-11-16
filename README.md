@@ -39,6 +39,8 @@ trace-dock uninstall
 
 该命令需要两次交互确认，删除当前 `trace-dock` 可执行文件及 CLI 专属的 `TRACE_DOCK_HOME`（配置、任务、归档、日志）。它不会删除该目录之外的用户文件、源代码、workspace、OSS 对象或服务端数据。数据目录含未知文件或符号链接时会拒绝卸载；Windows 会在 CLI 退出后由清理进程删除 `.exe`。
 
+npm 安装版使用 `trace-dock uninstall --data` 清理本地配置、设备 ID、任务和归档；命令同样要求两次确认，但保留 npm 管理的 CLI。之后运行 `npm uninstall -g @pjlab/trace-dock` 移除命令及平台二进制。直接执行 `npm uninstall` 会保留上述本地数据。
+
 通过 `.deb` / `.rpm` 安装的程序使用 `sudo apt remove trace-dock` / `sudo dnf remove trace-dock` 卸载，以保持系统包数据库一致；包管理器卸载不清理用户的个人配置和任务数据。
 
 配置优先级为 `--server`、`TRACE_DOCK_SERVER`、`$TRACE_DOCK_HOME/config.json`、编译时默认地址。仓库默认地址 `https://collector.example.com` 是占位值，发布时必须配置实际域名：
@@ -58,7 +60,7 @@ GitHub Actions 配置在 [.github/workflows/release.yml](.github/workflows/relea
 | `TRACE_DOCK_CLAUDE_HOME` / `--claude-home` | 显式指定 Claude Code 数据根目录或 projects 目录；未指定时自动读取 `CLAUDE_CONFIG_DIR`，最后使用 `~/.claude` |
 | config.json | `{"server_url":"https://your-collector.example.com","codex_home":"/data/codex","claude_home":"/data/claude"}`；两个工具路径字段可省略 |
 
-轨迹目录优先级为命令行参数、`TRACE_DOCK_*_HOME` 环境变量、config.json 的 `codex_home` / `claude_home`、工具原生环境变量、默认数据目录。可填写工具数据根目录或末级 sessions/projects，支持空格及 `~/`；每次只扫描当前选中的一个目录，目录不存在或未发现轨迹时允许手动输入其他数据目录。发现成功后界面显示实际扫描路径。更改程序安装目录不影响发现；本地桌面客户端/IDE 只要把轨迹保存在相同布局中即可发现。GUI 客户端的自定义环境不一定被终端继承，可用参数或配置显式指定；远端、云端、另一用户或另一 WSL 环境的数据需在实际落盘环境采集或指定已挂载路径。当前 Codex 仍只扫描 sessions/YYYY/MM/DD/rollout-*.jsonl，不自动扫描 archived_sessions 或压缩文件。
+轨迹目录优先级为命令行参数、`TRACE_DOCK_*_HOME` 环境变量、config.json 的 `codex_home` / `claude_home`、工具原生环境变量、默认数据目录。可填写工具数据根目录或末级 sessions/projects，支持空格及 `~/`；目录不存在或未发现轨迹时允许手动输入其他数据目录。发现成功后界面显示实际扫描路径。Codex 会扫描 `sessions` 和相邻的 `archived_sessions` 中的 rollout JSONL，并按 `session_meta` 父线程 ID 把子 agent rollout 归入根会话；Claude Code 从 projects 中递归发现主会话及 `subagents/agent-*.jsonl`。更改程序安装目录不影响发现；本地桌面客户端/IDE 只要把轨迹保存在相同布局中即可发现。GUI 客户端的自定义环境不一定被终端继承，可用参数或配置显式指定；远端、云端、另一用户或另一 WSL 环境的数据需在实际落盘环境采集或指定已挂载路径。
 
 ```bash
 ./dist/trace-dock --codex-home /data/codex
@@ -68,6 +70,12 @@ GitHub Actions 配置在 [.github/workflows/release.yml](.github/workflows/relea
 列表中的“轨迹有效/无效”描述完成与错误证据，与敏感信息检测无关。按 D 查看详情可见具体 `validity_reason`；无效轨迹仍可选择和归档。当前采用整份日志的保守口径：存在 JSONL 解析/读取异常，或任意位置出现中断、超时、API/工具错误、max_tokens 等记录，或未识别到结束标记，都会计为 invalid；中途出错、后来完成仍可能计为 invalid，详情明确提示“存在完成标记，也记录过中断或报错”。敏感信息检测在用户授权采集后单独执行，命中才整文件排除。
 
 任务目录包含 `job.json`、`selection.json`、`consent.json`、`manifest.json`、`exclusions.jsonl`、`large-files/`、`staging/`、`upload-state.json`、`logs.jsonl` 和成功后的 `receipt.json`。Unix 使用私有权限；Windows 使用当前用户 ACL。再次运行并验证同一身份后，可以恢复原 Job。恢复上传只读取原归档；恢复打包只处理已登记的源文件，不自动发现新增会话或子 agent。
+
+生产环境必须使用 HTTPS。仅测试时可对任意 HTTP 服务显式启用明文 HTTP：所有平台都可使用 `trace-dock --allow-http --server http://<测试服务器地址>`；也可设置 `TRACE_DOCK_ALLOW_HTTP=1`。PowerShell 写法为 `$env:TRACE_DOCK_ALLOW_HTTP = "1"`，Windows CMD 写法为 `set "TRACE_DOCK_ALLOW_HTTP=1"`。启用后个人 token 和上传控制请求不会由 TLS 加密。
+
+Windows 控制台启动时会切换为 UTF-8，并尝试启用 ANSI VT；若控制台不支持 VT，会使用纯文本刷新，避免把转义序列显示成乱码。建议使用 Windows Terminal 或新版 Windows Console。
+
+地址等文本输入支持 Backspace 删除完整字符；输入地址或邀请代码时按 Ctrl+C/Ctrl+D 会取消并退出 CLI。
 
 仅支持当前按 Job 隔离的对象格式。旧格式任务直接清理，不提供恢复或迁移；当前格式任务仍支持中断恢复。
 
@@ -108,7 +116,7 @@ make acceptance \
   SESSION=SESSION_ID
 ```
 
-生产服务地址和 OSS 必须使用 HTTPS；CLI 只允许在显式设置 `TRACE_DOCK_ALLOW_HTTP=1` 时访问回环 HTTP。
+生产服务地址和 OSS 必须使用 HTTPS；仅测试环境可通过 `--allow-http` 或 `TRACE_DOCK_ALLOW_HTTP=1` 显式允许 HTTP 服务地址。
 
 实际验证范围和上线前验收项见 [MVP-实现与验收.md](docs/MVP-实现与验收.md)。
 

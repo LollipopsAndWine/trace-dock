@@ -32,6 +32,10 @@ CLI 与服务端按职责选择语言：Go CLI 提供单文件部署、低内存
 
 CLI 内置默认服务地址。用户可通过配置文件修改默认值，也可在启动时临时覆盖。跨平台产物由一台 CI 构建机交叉编译；用户下载对应系统的二进制即可。
 
+服务地址支持 `--server URL`。生产和正式采集必须使用 HTTPS；测试环境可在 Linux/macOS/Windows 统一使用 `--allow-http --server http://<测试服务器地址>`，或设置 `TRACE_DOCK_ALLOW_HTTP=1`。Windows CMD 使用 `set "TRACE_DOCK_ALLOW_HTTP=1"`，PowerShell 使用 `$env:TRACE_DOCK_ALLOW_HTTP = "1"`；该开关只改变协议校验，不应在生产环境启用。
+
+Windows 交互启动时将控制台输入/输出代码页设置为 UTF-8，并启用 ANSI VT；不支持 VT 的旧控制台自动关闭 ANSI 清屏和颜色，使用纯文本输出，不能把转义序列显示到用户界面。
+
 配置文件沿用完整方案的 `$TRACE_DOCK_HOME/config.json`；默认任务根目录为 Linux/macOS `~/.trace-dock`、Windows `%LOCALAPPDATA%/trace-dock`。配置只保存服务地址等非敏感设置，优先级为命令行、环境变量、配置文件、内置默认值。
 
 轨迹位置新增 `--codex-home` / `--claude-home` 参数及配置字段 `codex_home` / `claude_home`。位置优先级为命令行参数、`TRACE_DOCK_CODEX_HOME` / `TRACE_DOCK_CLAUDE_HOME`、配置文件、原生 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`、默认 `~/.codex` / `~/.claude`。允许填写数据根目录或末级 sessions/projects，找不到轨迹时可在界面手动指定；不根据程序安装目录猜测数据位置，不递归扫描整个磁盘。实际路径写入界面摘要；轨迹 data home 作为私有状态边界，在发现、恢复和打包登记时持续禁止成为 workspace 快照。
@@ -68,7 +72,7 @@ MVP 按顺序执行：
 | 启动与身份识别 | 显示预填服务地址，允许本次修改或保存为新默认值；输入个人 token 并验证 | 服务地址已配置、身份已验证 |
 | 选择工具 | 单选 Codex 或 Claude；一次运行只采集一种工具，不支持 Codex + Claude 混合采集 | 显示已选工具 |
 | 登记任务 | 自动登记参与者、机器和工具，获取 Job ID 与版本化规则；此步没有额外问答 | 已登记，尚未采集或上传文件 |
-| 本机发现 | 读取轨迹 JSONL 提取元数据，递归发现 Claude 子 agent；不读 workspace 文件内容 | 显示发现数量 |
+| 本机发现 | 读取轨迹 JSONL 提取元数据，递归发现 Codex 和 Claude 子 agent；不读 workspace 文件内容 | 显示发现数量 |
 | 选择范围 | 清单显示工具、session ID、结束时间、cwd、workspace 处理方式和子 agent 数；支持搜索、分页、全部上传或多选 | 显示选中数和未选中数 |
 | 本机采集授权 | 展示选中的会话/workspace 范围；默认“是” | 用户确认后才读取所选 workspace |
 | 本机扫描与打包 | 先在本地逐会话登记源路径和时间，再只处理选中项；按 RFC-01 自动分级 cwd、本机扫描密钥、生成归档及 manifest | 显示实际归档体积与排除清单 |
@@ -85,7 +89,7 @@ workspace 分级不是用户需要理解或选择的策略，由 CLI 根据 RFC-
 | home、包含多个仓库的 parent、artifact、missing | 只记录路径和分类原因，不制作快照 |
 | unknown | 默认只记录路径 |
 
-用户按根会话选择；选中 Claude 根会话时自动包括其子 agent。多个选中会话引用同一 workspace 时，在本次 job 中共享一份快照。未选会话的 workspace 内容不读取、不扫描、不打包、不上传；最终上传确认和中断恢复均不得扩大原选择范围。
+用户按根会话选择；选中 Codex 或 Claude 根会话时自动包括已关联的子 agent。多个选中会话引用同一 workspace 时，在本次 job 中共享一份快照。未选会话的 workspace 内容不读取、不扫描、不打包、不上传；最终上传确认和中断恢复均不得扩大原选择范围。
 
 密钥命中文件整个排除且不原地修改。MVP 只上传选中会话的轨迹、允许的 workspace 快照、manifest、排除清单和大文件清单。
 
@@ -95,11 +99,12 @@ CLI 按当前采集目标发现轨迹、登记选择、扫描敏感信息并原�
 
 **发现与解析**
 
-- Codex 只扫描 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`。旧版按顶层 `type=response_item` 识别 `apply_patch` / `exec_command`；新版支持 `response_item.payload.type=custom_tool_call` 和 `event_msg.payload.type=item_completed`，也支持无顶层 type 的独立 payload 形状，并保留可能存在的 ordinal / thread_name。新版文件中的这些封装事件可以与普通 `response_item` 消息共存，不能仅因同时出现这两类标记就判为混合格式。适配器 `1.1.0` 将格式识别与归档资格分开；无法明确分类的结构记录为 unknown 或 mixed，原始轨迹仍可供用户选择。
+- Codex 扫描 `~/.codex/sessions` 下的 rollout JSONL，并兼容已归档到 `~/.codex/archived_sessions` 的轨迹。子 agent 是独立 rollout；从 `session_meta` 的 `source.subagent.thread_spawn.parent_thread_id` 或兼容的 `parent_thread_id` 字段关联父会话，递归包含其后代。没有父 ID 或父轨迹缺失的子会话不作为独立可选根会话。
+- Codex 旧版按顶层 `type=response_item` 识别 `apply_patch` / `exec_command`；新版支持 `response_item.payload.type=custom_tool_call` 和 `event_msg.payload.type=item_completed`，也支持无顶层 type 的独立 payload 形状，并保留可能存在的 ordinal / thread_name。新版文件中的这些封装事件可以与普通 `response_item` 消息共存，不能仅因同时出现这两类标记就判为混合格式。适配器 `1.1.0` 将格式识别与归档资格分开；无法明确分类的结构记录为 unknown 或 mixed，原始轨迹仍可供用户选择。
 - Codex 未知或混合 schema 只记录格式标签及 evidence，不因格式而隐藏或排除会话。读取失败的文件不能归档；可读文件通过敏感信息检测后按原始字节上传，不解析重写正文。
 - Claude 从 `~/.claude/projects` 递归发现所有 JSONL，必须包括 `<session-id>/subagents/agent-*.jsonl`。路径只从轨迹事件的 cwd 字段取得；projects 编码目录会损失非 ASCII 路径信息，不可用于还原路径。
 - Claude 轨迹按已知字段尽力提取元数据；JSONL 损坏或缺少结束证据保守记录为 invalid，未知格式记录为 unknown，这些分析标签不阻止原文归档。不猜测无法提取的字段；缺少 cwd 时仅归档轨迹，不推断 workspace。
-- Claude 子 agent 依据明确事件关联或 `<session-id>/subagents/agent-*.jsonl` 目录结构关联到父会话。无证据时不按相似路径猜测。
+- Claude 子 agent 依据明确的 `parentSessionId` 或 `<session-id>/subagents/agent-*.jsonl` 目录结构关联到父会话。无证据时不按相似路径猜测。
 - 每个被采集的根会话记录参与者、机器名、工具、workspace/cwd、轨迹路径、会话结束时间、采集时间和二者秒差；目录顶层 mtime 只作参考，不能证明子目录未变化。
 - Codex ID 优先使用 rollout 文件名中的 UUID；不含 UUID 时使用原文件路径的摘要生成稳定文件 ID 并注明来源。Claude ID 使用主轨迹文件名。resume/fork 按明确根会话归并，依次按事件数、文件大小、结束时间选择最长版本，其余 ID 记为 alias；不跨工具归并。
 

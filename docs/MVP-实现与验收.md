@@ -2,7 +2,7 @@
 
 实现依据为 `CLI-MVP-技术方案.md` 与 RFC-01。CLI 入口 `cmd/trace-dock`，服务端独立仓库 `../trace-dock-server`。两端通过 `API-MVP.md` 约定的 v1 JSON 接口交互。
 
-已实现默认逐项问答、隐藏 token、身份核对、单工具选择、可搜索分页的根会话多选，以及需分别明确确认的本机采集与最终上传授权。发现与采集分离；本地登记选择和时间后才进入 workspace 正文读取。恢复沿用原 Job、已登记源文件、冻结规则及已确认归档。Codex/Claude 的未知或混合 schema 不再限制选择和原文归档，缺失元数据记未知，敏感信息检测和 CRC64 完整性校验继续执行；Claude 子 agent 依据明确字段或目录关联，支持深层子 agent；resume/fork 保留最长版本与 aliases。
+已实现默认逐项问答、隐藏 token、身份核对、单工具选择、可搜索分页的根会话多选，以及需分别明确确认的本机采集与最终上传授权。发现与采集分离；本地登记选择和时间后才进入 workspace 正文读取。恢复沿用原 Job、已登记源文件、冻结规则及已确认归档。Codex/Claude 的未知或混合 schema 不再限制选择和原文归档，缺失元数据记未知，敏感信息检测和 CRC64 完整性校验继续执行；Codex 子 agent 依据 rollout session_meta 的父线程 ID 关联，Claude 子 agent 依据明确字段或目录关联，均支持深层子 agent；resume/fork 保留最长版本与 aliases。
 
 workspace 使用项目证据、所有者与路径边界进行保守分类，不用 Git 仓库数量否定已锚定项目内的子模块。unknown、跨人、产物目录默认只记录路径。纯 Go 扫描使用 guiji 的 16 条 Gitleaks 高置信度规则与明文凭据兜底；扫描失败或文件持续变化时排除。确定性 tar.zst 保存普通文件、空目录、必要执行权限和安全的目录内链接。`.git/` 接受密钥扫描但绕过大文件排除。归档不修改源文件。
 

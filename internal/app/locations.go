@@ -61,7 +61,9 @@ func normalizeTrajectoryRoot(tool, home, value string) (string, error) {
 func discoverWithLocation(u *ui.UI, tool, home, root, source string) ([]*core.Session, error) {
 	for {
 		u.Info(ui.WrapLines("轨迹目录：", root+"（"+source+"）")...)
+		stopSpinner := u.StartSpinner("正在扫描本机轨迹数据")
 		sessions, err := core.Discover(tool, home, root)
+		stopSpinner()
 		if err == nil && len(sessions) > 0 {
 			u.Record("轨迹目录", root)
 			return sessions, nil
