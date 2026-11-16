@@ -105,6 +105,17 @@ func TestHiddenLineEditorCancelsOnCtrlC(t *testing.T) {
 	}
 }
 
+func TestCookedLineInputAcceptsPastedLineAndDefault(t *testing.T) {
+	value, err := readCookedLine(bufio.NewReader(strings.NewReader("http://127.0.0.1:8080\r\n")), "https://default.example")
+	if err != nil || value != "http://127.0.0.1:8080" {
+		t.Fatalf("cooked input did not preserve pasted text: value=%q err=%v", value, err)
+	}
+	value, err = readCookedLine(bufio.NewReader(strings.NewReader("\r\n")), "https://default.example")
+	if err != nil || value != "https://default.example" {
+		t.Fatalf("empty cooked input did not use default: value=%q err=%v", value, err)
+	}
+}
+
 func TestProgressNamedKeepsIndependentSessionLines(t *testing.T) {
 	var output strings.Builder
 	u := &UI{Out: &output, TTY: true, Color: false}

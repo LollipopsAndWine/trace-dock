@@ -825,6 +825,17 @@ func (u *UI) readLine(prompt, def string, hidden bool) (string, error) {
 	if u.reader == nil {
 		return "", fmt.Errorf("输入终端不可用")
 	}
+	if u.TTY && u.In != nil {
+		if hidden {
+			value, err := term.ReadPassword(int(u.In.Fd()))
+			u.Printf("%s", u.lineEnd())
+			if err != nil {
+				return "", err
+			}
+			return inputOrDefault(string(value), def), nil
+		}
+		return readCookedLine(u.reader, def)
+	}
 	restore := func() {}
 	if u.In != nil && u.TTY {
 		var err error
@@ -880,6 +891,23 @@ func (u *UI) readLine(prompt, def string, hidden bool) (string, error) {
 		}
 	}
 }
+
+func inputOrDefault(value, def string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return def
+	}
+	return value
+}
+
+func readCookedLine(reader *bufio.Reader, def string) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return inputOrDefault(strings.TrimRight(line, "\r\n"), def), nil
+}
+
 func (u *UI) Choose(prompt string, items []string, initial int) (int, error) {
 	if !u.TTY {
 		return 0, fmt.Errorf("此操作需要交互终端")
