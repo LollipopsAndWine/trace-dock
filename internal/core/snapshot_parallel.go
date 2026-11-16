@@ -99,10 +99,6 @@ func (c *Collector) snapshot(ctx context.Context, m *Manifest, sessions []*Sessi
 			reject("not_regular_or_unreadable")
 			return nil
 		}
-		if !ownedByCurrentUser(p) {
-			reject("cross_owner_requires_authorization")
-			return nil
-		}
 		candidates = append(candidates, workspaceCandidate{rel: rel, absolute: p, info: st, largeReason: LargeFileReason(filepath.ToSlash(rel), st.Size(), m.Rules)})
 		return nil
 	})

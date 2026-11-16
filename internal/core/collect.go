@@ -531,10 +531,6 @@ func (c *Collector) snapshotLegacy(ctx context.Context, m *Manifest, sessions []
 			reject("not_regular_or_unreadable")
 			return nil
 		}
-		if !ownedByCurrentUser(p) {
-			reject("cross_owner_requires_authorization")
-			return nil
-		}
 		if largeReason := LargeFileReason(filepath.ToSlash(rel), st.Size(), m.Rules); largeReason != "" {
 			ch, hit, reason := c.scanOnly(ctx, p, root, rel, progressKey, nil)
 			if ctx.Err() != nil {
