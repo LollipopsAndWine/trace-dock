@@ -164,7 +164,7 @@ func (u *UI) renderScreen(lines []string) {
 		// scrollback so the terminal contains only the current page.
 		screen = "\x1b[3J\x1b[2J\x1b[H" + screen + "\x1b[J"
 	}
-	_, _ = fmt.Fprint(u.Out, screen)
+	u.Printf("%s", screen)
 }
 
 func (u *UI) uploadLines(width int) []string {

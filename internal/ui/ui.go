@@ -40,6 +40,8 @@ type UI struct {
 	plainActivities map[string]string
 	plainScreen     []string
 	leaveScreen     func()
+	frame           strings.Builder
+	frameActive     bool
 	ctx             context.Context
 }
 
@@ -56,9 +58,33 @@ func New() *UI {
 	_, noColor := os.LookupEnv("NO_COLOR")
 	return &UI{In: os.Stdin, Out: os.Stdout, reader: bufio.NewReader(os.Stdin), TTY: tty, ANSI: ansi, Color: tty && ansi && !noColor && os.Getenv("TERM") != "dumb"}
 }
-func (u *UI) Printf(f string, args ...any)  { fmt.Fprintf(u.Out, f, args...) }
+func (u *UI) Printf(f string, args ...any) {
+	if u.frameActive {
+		_, _ = fmt.Fprintf(&u.frame, f, args...)
+		return
+	}
+	_, _ = fmt.Fprintf(u.Out, f, args...)
+}
 func (u *UI) Println(f string, args ...any) { u.Printf(f+u.lineEnd(), args...) }
-func (u *UI) Break()                        { _, _ = fmt.Fprint(u.Out, u.lineEnd()) }
+func (u *UI) Break()                        { u.Printf("%s", u.lineEnd()) }
+
+func (u *UI) beginFrame() {
+	if u.TTY && u.ANSI && !u.frameActive {
+		u.frame.Reset()
+		u.frameActive = true
+	}
+}
+
+func (u *UI) endFrame() {
+	if !u.frameActive {
+		return
+	}
+	frame := u.frame.String()
+	u.frame.Reset()
+	u.frameActive = false
+	_, _ = fmt.Fprint(u.Out, frame)
+}
+
 func WrapLines(prefix, value string) []string {
 	width, _, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
@@ -535,19 +561,18 @@ func (u *UI) renderBase() {
 		u.renderPlainBase()
 		return
 	}
-	if u.TTY && u.ANSI {
-		// Clear both the visible screen and terminal scrollback. Every render is
-		// a complete frame, so older steps must not remain available above it.
-		u.Printf("\x1b[3J\x1b[2J\x1b[H")
+	lines := []string{}
+	appendLine := func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
 	}
 	if u.heading != "" {
-		u.Println("%s", u.Style("1;36", u.heading))
+		appendLine("%s", u.Style("1;36", u.heading))
 	}
 	for _, item := range u.history {
 		if item.label == "" {
-			u.Println("%s %s", u.Style("1;32", "✓"), item.value)
+			appendLine("%s %s", u.Style("1;32", "✓"), item.value)
 		} else {
-			u.Println("%s %s  %s", u.Style("1;32", "✓"), u.Style("2", item.label), u.Style("36", item.value))
+			appendLine("%s %s  %s", u.Style("1;32", "✓"), u.Style("2", item.label), u.Style("36", item.value))
 		}
 	}
 	if u.title != "" {
@@ -555,11 +580,11 @@ func (u *UI) renderBase() {
 		if strings.Contains(u.step, "/") {
 			prefix = u.step + "  ◆"
 		}
-		u.Break()
-		u.Println("%s %s", u.Style("1;36", prefix), u.Style("1", u.title))
+		lines = append(lines, "")
+		appendLine("%s %s", u.Style("1;36", prefix), u.Style("1", u.title))
 	}
 	for _, line := range u.info {
-		u.Println("%s", line)
+		appendLine("%s", line)
 	}
 	activityLines := []string{}
 	if len(u.activities) > 0 {
@@ -575,8 +600,9 @@ func (u *UI) renderBase() {
 		activityLines = append(activityLines, u.activity)
 	}
 	for _, line := range activityLines {
-		u.Println("%s", u.Style("36", line))
+		appendLine("%s", u.Style("36", line))
 	}
+	u.renderScreen(lines)
 }
 
 func (u *UI) renderPlainBase() {
@@ -838,12 +864,14 @@ func (u *UI) Token() (string, error) {
 }
 
 func (u *UI) readLine(prompt, def string, hidden bool) (string, error) {
+	u.beginFrame()
 	u.renderBase()
 	u.Printf("%s", u.Style("1;36", "◆ "+prompt))
 	if def != "" {
 		u.Printf(" [%s]", def)
 	}
 	u.Printf(": ")
+	u.endFrame()
 	if u.reader == nil {
 		return "", fmt.Errorf("输入终端不可用")
 	}
@@ -941,6 +969,7 @@ func (u *UI) Choose(prompt string, items []string, initial int) (int, error) {
 	defer restore()
 	idx := initial
 	for {
+		u.beginFrame()
 		u.renderBase()
 		u.Break()
 		u.Println("%s", u.Style("1", "◆ "+prompt))
@@ -953,6 +982,7 @@ func (u *UI) Choose(prompt string, items []string, initial int) (int, error) {
 		}
 		u.Break()
 		u.Println("%s", u.Style("2", "↑↓ 选择 · Enter 确认 · Ctrl+C 退出"))
+		u.endFrame()
 		k, e := key(u.reader)
 		if e != nil {
 			return 0, e
@@ -1051,6 +1081,7 @@ func (u *UI) ChooseScope(sessions []*core.Session) (bool, error) {
 			cursor = page * pageSize
 		}
 
+		u.beginFrame()
 		u.renderBase()
 		u.Break()
 		u.Println("%s", u.Style("1", "◆ 发现清单"))
@@ -1092,6 +1123,7 @@ func (u *UI) ChooseScope(sessions []*core.Session) (bool, error) {
 		u.Break()
 		u.Println("%s", u.Style("2", "Enter 确认 · 全选仍遵守目录授权和密钥排除规则"))
 
+		u.endFrame()
 		keyValue, keyErr := key(u.reader)
 		if keyErr != nil {
 			return false, keyErr
@@ -1258,6 +1290,7 @@ func (u *UI) Select(sessions []*core.Session) ([]*core.Session, string, error) {
 			tableCells[i][5] = clipDisplay(tableCells[i][5], columnWidths[5])
 		}
 		headerLine := "  " + formatAlignedRow(selectionSessionHeaders, columnWidths)
+		u.beginFrame()
 		u.renderBase()
 		searchLabel := clean(query)
 		if search {
@@ -1320,6 +1353,7 @@ func (u *UI) Select(sessions []*core.Session) ([]*core.Session, string, error) {
 		for _, line := range helpLines {
 			u.Println("%s", u.Style("2", line))
 		}
+		u.endFrame()
 		k, e := key(u.reader)
 		if e != nil {
 			return nil, "", e

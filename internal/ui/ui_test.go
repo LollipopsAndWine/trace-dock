@@ -10,6 +10,16 @@ import (
 	"github.com/trace-dock/trace-dock/internal/core"
 )
 
+type writeCounter struct {
+	writes int
+	output strings.Builder
+}
+
+func (w *writeCounter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.output.Write(p)
+}
+
 func TestStyleRespectsColorSetting(t *testing.T) {
 	u := &UI{}
 	plain := u.Style("1;32", "ready")
@@ -170,6 +180,36 @@ func TestStepKeepsConfirmedChoicesAboveCurrentQuestion(t *testing.T) {
 	}
 	if strings.Contains(lastScreen, "连接服务") {
 		t.Fatalf("previous question should be collapsed into a result: %s", lastScreen)
+	}
+}
+
+func TestBaseRenderWritesTheWholeFrameAtOnce(t *testing.T) {
+	output := &writeCounter{}
+	u := &UI{Out: output, TTY: true, ANSI: true}
+	u.BeginFlow("Trace Dock")
+	before := output.writes
+	u.Step("02/07", "Discover")
+	if got := output.writes - before; got != 1 {
+		t.Fatalf("base screen used %d writes for one frame, want 1", got)
+	}
+}
+
+func TestInteractiveFrameWritesBaseAndPromptTogether(t *testing.T) {
+	output := &writeCounter{}
+	u := &UI{Out: output, TTY: true, ANSI: true}
+	u.BeginFlow("Trace Dock")
+	before := output.writes
+	u.beginFrame()
+	u.renderBase()
+	u.Break()
+	u.Println("Session row")
+	u.Println("Enter confirms")
+	u.endFrame()
+	if got := output.writes - before; got != 1 {
+		t.Fatalf("interactive screen used %d writes for one frame, want 1", got)
+	}
+	if !strings.Contains(output.output.String(), "Session row") {
+		t.Fatalf("interactive frame did not include rows: %q", output.output.String())
 	}
 }
 
