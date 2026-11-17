@@ -39,6 +39,29 @@ func TestConfirmationDefaultsToYes(t *testing.T) {
 	}
 }
 
+func TestKeyConsumesMouseWheelEvents(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("\x1b[<64;12;4M\x1b[B\x1b[<65;12;4m"))
+	if got, err := key(reader); err != nil || got != "mouse" {
+		t.Fatalf("SGR mouse press was not consumed: key=%q err=%v", got, err)
+	}
+	if got, err := key(reader); err != nil || got != "down" {
+		t.Fatalf("keyboard input after mouse event was corrupted: key=%q err=%v", got, err)
+	}
+	if got, err := key(reader); err != nil || got != "mouse" {
+		t.Fatalf("SGR mouse release was not consumed: key=%q err=%v", got, err)
+	}
+}
+
+func TestMouseTrackingIsScopedAndRestored(t *testing.T) {
+	var output strings.Builder
+	u := &UI{Out: &output, TTY: true, ANSI: true}
+	restore := u.enableMouseTracking()
+	restore()
+	if got, want := output.String(), "\x1b[?1000h\x1b[?1006h\x1b[?1006l\x1b[?1000l"; got != want {
+		t.Fatalf("mouse tracking controls = %q, want %q", got, want)
+	}
+}
+
 func TestPlainTerminalProgressDoesNotRepeatStaticScreen(t *testing.T) {
 	var output strings.Builder
 	u := &UI{Out: &output, TTY: true, Color: false}

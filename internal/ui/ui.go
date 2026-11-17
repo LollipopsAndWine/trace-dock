@@ -136,6 +136,17 @@ func (u *UI) enterAlternateScreen() func() {
 	return func() { u.Printf("\x1b[?1049l") }
 }
 
+// enableMouseTracking captures terminal mouse events while a raw keyboard
+// menu is active. The menu intentionally ignores mouse input, including the
+// wheel, so the terminal cannot scroll the alternate screen behind it.
+func (u *UI) enableMouseTracking() func() {
+	if !u.TTY || !u.ANSI {
+		return func() {}
+	}
+	u.Printf("\x1b[?1000h\x1b[?1006h")
+	return func() { u.Printf("\x1b[?1006l\x1b[?1000l") }
+}
+
 func displayWidth(s string) int {
 	width := 0
 	for _, r := range s {
@@ -967,6 +978,8 @@ func (u *UI) Choose(prompt string, items []string, initial int) (int, error) {
 		return 0, e
 	}
 	defer restore()
+	restoreMouse := u.enableMouseTracking()
+	defer restoreMouse()
 	idx := initial
 	for {
 		u.beginFrame()
@@ -1033,6 +1046,8 @@ func (u *UI) ChooseScope(sessions []*core.Session) (bool, error) {
 		return false, err
 	}
 	defer restore()
+	restoreMouse := u.enableMouseTracking()
+	defer restoreMouse()
 
 	choice, cursor, query := 0, 0, ""
 	search, detail := false, false
@@ -1216,6 +1231,27 @@ func key(r *bufio.Reader) (string, error) {
 				return "pgup", nil
 			}
 			return "pgdown", nil
+		case '<':
+			// SGR mouse protocol: ESC [ < button ; x ; y M/m.
+			// Consume the complete event and ignore it. In particular, wheel
+			// events must not fall through to terminal scrolling.
+			for {
+				b, e = r.ReadByte()
+				if e != nil {
+					return "", e
+				}
+				if b == 'M' || b == 'm' {
+					return "mouse", nil
+				}
+			}
+		case 'M':
+			// Legacy X10 mouse protocol: button, column, row.
+			for i := 0; i < 3; i++ {
+				if _, e = r.ReadByte(); e != nil {
+					return "", e
+				}
+			}
+			return "mouse", nil
 		}
 		return "", nil
 	default:
@@ -1254,6 +1290,8 @@ func (u *UI) Select(sessions []*core.Session) ([]*core.Session, string, error) {
 		return nil, "", e
 	}
 	defer restore()
+	restoreMouse := u.enableMouseTracking()
+	defer restoreMouse()
 	selected := map[*core.Session]bool{}
 	cursor := 0
 	query := ""
