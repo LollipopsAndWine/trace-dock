@@ -4,7 +4,7 @@
 
 仅支持当前按 Job 隔离的对象格式。旧格式任务直接清理，不提供恢复或迁移；当前格式任务仍支持中断恢复。
 
-`POST /v1/identity/verify` 请求 `{}`，响应：
+`POST /v1/identity/verify` 不需要请求体，只需携带 `Authorization: Bearer <个人 token>`，响应：
 
 ```json
 {"participant_id":"pseudonymous-id","masked_email":"p***@example.com"}
@@ -52,7 +52,7 @@
 
 打包后先 PATCH `{"state":"awaiting_upload_confirmation"}`。选择摘要是根 session ID 排序后、紧凑 JSON 数组 UTF-8 的 SHA-256。选择与授权时间一旦登记即冻结；后续更新不能扩展数量或替换摘要。客户端不能上报已校验字节数或把任务标为 completed。中断可 PATCH `resumable`，拒绝本机采集可 PATCH `cancelled`。
 
-`POST /v1/collections/{job_id}/credentials` 请求 `{}`。必须已确认上传，响应：
+`POST /v1/collections/{job_id}/credentials` 不需要请求体。必须已确认上传，响应：
 
 ```json
 {"endpoint":"https://oss-cn-hangzhou.aliyuncs.com","bucket":"bucket-name","prefix":"trajectory/token=<token>/dt=2026-11-12/job=<job-id>/","region":"cn-hangzhou","access_key_id":"temporary","access_key_secret":"temporary","security_token":"temporary","expiration":"2026-11-12T11:05:00Z","path_style":false}

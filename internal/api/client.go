@@ -67,17 +67,27 @@ func New(base, token string) *Client {
 	return &Client{Base: strings.TrimRight(base, "/"), Token: token, HTTP: &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 func (c *Client) Call(ctx context.Context, method, path string, input, output any, key string) error {
-	b, e := json.Marshal(input)
-	if e != nil {
-		return e
+	var bodyBytes []byte
+	if input != nil {
+		b, e := json.Marshal(input)
+		if e != nil {
+			return e
+		}
+		bodyBytes = b
 	}
 	for attempt := 0; attempt < 4; attempt++ {
-		req, e := http.NewRequestWithContext(ctx, method, c.Base+path, bytes.NewReader(b))
+		var body io.Reader
+		if input != nil {
+			body = bytes.NewReader(bodyBytes)
+		}
+		req, e := http.NewRequestWithContext(ctx, method, c.Base+path, body)
 		if e != nil {
 			return fmt.Errorf("invalid API request")
 		}
 		req.Header.Set("Authorization", "Bearer "+c.Token)
-		req.Header.Set("Content-Type", "application/json")
+		if input != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		if key != "" {
 			req.Header.Set("Idempotency-Key", key)
 		}
@@ -126,7 +136,7 @@ func (c *Client) Call(ctx context.Context, method, path string, input, output an
 }
 func (c *Client) Verify(ctx context.Context) (Identity, error) {
 	var v Identity
-	e := c.Call(ctx, "POST", "/v1/identity/verify", struct{}{}, &v, "")
+	e := c.Call(ctx, "POST", "/v1/identity/verify", nil, &v, "")
 	return v, e
 }
 func (c *Client) Create(ctx context.Context, v Create) (Job, error) {
@@ -139,6 +149,6 @@ func (c *Client) Patch(ctx context.Context, id string, v any) error {
 }
 func (c *Client) Credentials(ctx context.Context, id string) (Credentials, error) {
 	var v Credentials
-	e := c.Call(ctx, "POST", "/v1/collections/"+id+"/credentials", struct{}{}, &v, "")
+	e := c.Call(ctx, "POST", "/v1/collections/"+id+"/credentials", nil, &v, "")
 	return v, e
 }
