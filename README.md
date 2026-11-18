@@ -14,6 +14,8 @@ Trace Dock 是一个交互式命令行工具，用来选择 Codex 或 Claude Cod
 npm install -g @pjlab/trace-dock
 ```
 
+Windows 全局安装后会移除 npm 自动生成的 PowerShell `.ps1` 启动器，避免受限的脚本执行策略拦截。CMD 和 PowerShell 都可直接运行 `trace-dock`，`.cmd` 启动器保留。
+
 支持 Linux x64 / ARM64、macOS Intel / Apple Silicon、Windows x64 / ARM64。npm 安装时不要使用 `--omit=optional`，平台对应的原生程序通过 optional dependencies 安装。
 
 ### 2. 运行

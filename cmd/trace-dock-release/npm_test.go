@@ -93,15 +93,25 @@ func TestNPMArchivePlatformSelectionAndIntegrity(t *testing.T) {
 		t.Fatal("native packages must publish before entry package")
 	}
 	main := readNPMPackage(t, filepath.Join(dir, "npm", "trace-dock-cli.tgz"))
-	if len(main) != 4 {
+	if len(main) != 5 {
 		t.Fatal("unexpected files in entry package")
 	}
 	var meta map[string]any
 	if err = json.Unmarshal(main["package/package.json"], &meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta["name"] != cfg.NPM.Name || meta["version"] != cfg.Version || meta["scripts"] != nil {
-		t.Fatal("entry package identity or lifecycle scripts")
+	if meta["name"] != cfg.NPM.Name || meta["version"] != cfg.Version {
+		t.Fatal("entry package identity")
+	}
+	scripts, ok := meta["scripts"].(map[string]any)
+	if !ok || scripts["postinstall"] != "node bin/postinstall.cjs" {
+		t.Fatal("Windows shim cleanup postinstall missing")
+	}
+	if !bytes.Equal(main["package/bin/postinstall.cjs"], []byte(npmPostinstall)) {
+		t.Fatal("postinstall script missing or changed")
+	}
+	if !strings.Contains(string(main["package/README.md"]), "restricted script execution policies") {
+		t.Fatal("Windows PowerShell behavior is undocumented")
 	}
 	deps := meta["optionalDependencies"].(map[string]any)
 	if len(deps) != len(targets) {
@@ -137,6 +147,65 @@ func TestNPMArchivePlatformSelectionAndIntegrity(t *testing.T) {
 		if !bytes.Equal(original, contents["package/bin/trace-dock"+target.Suffix]) {
 			t.Fatal("npm binary bytes changed")
 		}
+	}
+}
+
+func TestNPMWindowsPostinstallRemovesOnlyPackageShim(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell shim cleanup is Windows-specific")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required for postinstall testing")
+	}
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "prefix")
+	packageDir := filepath.Join(dir, "node_modules", "@example", "trace-dock")
+	bin := filepath.Join(packageDir, "bin")
+	if err = os.MkdirAll(prefix, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(bin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(packageDir, "package.json"), []byte(`{"name":"@example/trace-dock"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(bin, "postinstall.cjs")
+	if err = os.WriteFile(script, []byte(npmPostinstall), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ps1 := filepath.Join(prefix, "trace-dock.ps1")
+	cmd := filepath.Join(prefix, "trace-dock.cmd")
+	shim := []byte(`& "$basedir/node_modules/@example/other/bin/trace-dock.cjs"`)
+	if err = os.WriteFile(ps1, shim, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(cmd, []byte("@echo off\r\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(node, script)
+	command.Env = append(os.Environ(), "npm_config_global=true", "npm_config_global_prefix="+prefix)
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("global Windows postinstall: %v\n%s", runErr, output)
+	}
+	if _, err = os.Stat(ps1); err != nil {
+		t.Fatal("postinstall removed an unrelated PowerShell shim")
+	}
+	if _, err = os.Stat(cmd); err != nil {
+		t.Fatal("CMD shim was removed")
+	}
+	shim = []byte(`& "$basedir/node_modules/@example/trace-dock/bin/trace-dock.cjs"`)
+	if err = os.WriteFile(ps1, shim, 0644); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command(node, script)
+	command.Env = append(os.Environ(), "npm_config_global=false", "npm_config_global_prefix="+prefix)
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("local Windows postinstall: %v\n%s", runErr, output)
+	}
+	if _, err = os.Stat(ps1); err != nil {
+		t.Fatal("local install changed the PowerShell shim")
 	}
 }
 
@@ -284,7 +353,7 @@ func main(){if len(os.Args)>1&&os.Args[1]=="--version"{fmt.Println("1.2.3");retu
 			t.Fatalf("npm %v: %v\n%s", args, err, data)
 		}
 	}
-	npm("install", "-g", cfg.NPM.Name+"@"+cfg.Version, "--prefix", prefix, "--registry", server.URL, "--ignore-scripts", "--no-audit", "--no-fund")
+	npm("install", "-g", cfg.NPM.Name+"@"+cfg.Version, "--prefix", prefix, "--registry", server.URL, "--no-audit", "--no-fund")
 	cli := filepath.Join(prefix, "bin", "trace-dock")
 	cmd := exec.Command(cli, "--version")
 	cmd.Env = env

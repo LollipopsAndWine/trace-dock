@@ -37,6 +37,21 @@ child.on('exit', (code,signal) => {
 });
 `
 
+const npmPostinstall = `#!/usr/bin/env node
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+if (process.platform !== 'win32' || process.env.npm_config_global !== 'true') process.exit(0);
+const prefix = process.env.npm_config_global_prefix || process.env.npm_config_prefix;
+if (!prefix) process.exit(0);
+const shim = path.join(prefix, 'trace-dock.ps1');
+let contents;
+try { contents = fs.readFileSync(shim, 'utf8'); }
+catch (error) { if (error.code === 'ENOENT') process.exit(0); throw error; }
+const marker = 'node_modules/' + require('../package.json').name + '/bin/trace-dock.cjs';
+if (contents.replace(/\\/g, '/').toLowerCase().includes(marker.toLowerCase())) fs.unlinkSync(shim);
+`
+
 const npmPublisher = `#!/usr/bin/env node
 'use strict';
 const fs = require('node:fs');
