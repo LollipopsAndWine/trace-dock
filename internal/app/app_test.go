@@ -142,9 +142,10 @@ func TestValidObjectPrefixRequiresJobScope(t *testing.T) {
 		prefix string
 		valid  bool
 	}{
-		{"trajectory/token=opaque/dt=2026-11-14/job=job-123/", true},
-		{"trajectory/token=opaque/dt=2026-11-14/", false},
-		{"trajectory/token=opaque/dt=2026-11-14/job=other/", false},
+		{"trajectory/participant_id=opaque/dt=2026-11-14/job=job-123/", true},
+		{"trajectory/participant_id=opaque/dt=2026-11-14/", false},
+		{"trajectory/participant_id=opaque/dt=2026-11-14/job=other/", false},
+		{"trajectory/token=legacy-token/dt=2026-11-14/job=job-123/", false},
 		{"collections/job-123/", false},
 	} {
 		if got := validObjectPrefix(tc.prefix, "job-123"); got != tc.valid {
@@ -154,10 +155,13 @@ func TestValidObjectPrefixRequiresJobScope(t *testing.T) {
 }
 
 func TestManifestProtocolAllowsCurrentVersionAndRejectsOldTask(t *testing.T) {
+	if core.ManifestSchema != "1.2" {
+		t.Fatalf("manifest schema = %q, want 1.2", core.ManifestSchema)
+	}
 	if err := validateManifestProtocol(&core.Manifest{Schema: core.ManifestSchema}); err != nil {
 		t.Fatalf("current protocol rejected: %v", err)
 	}
-	err := validateManifestProtocol(&core.Manifest{Schema: "1.0"})
+	err := validateManifestProtocol(&core.Manifest{Schema: "1.1"})
 	if err == nil || !strings.Contains(err.Error(), "旧任务不能恢复") || !strings.Contains(err.Error(), "新建任务") {
 		t.Fatalf("old protocol did not get a recovery explanation: %v", err)
 	}

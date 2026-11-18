@@ -105,6 +105,35 @@ func missingTrajectorySummary(sessions []*core.Session) string {
 	return strings.Join(parts, "；")
 }
 
+func uploadReviewSummaryLines(u *ui.UI, m *core.Manifest, r uploadInventory, exclusions map[string]int) []string {
+	var lines []string
+	add := func(label, value string) {
+		lines = append(lines, ui.WrapLines(label+"  ", value)...)
+	}
+	add("主会话轨迹", fmt.Sprintf("上传 %d / 已选 %d 份 · %d 份不上传", r.ReadyMain, r.SelectedMain, len(r.MissingMain)))
+	if r.SelectedSubagents > 0 {
+		add("子 agent  ", fmt.Sprintf("上传 %d / 关联 %d 份 · %d 份不上传", r.ReadySubagents, r.SelectedSubagents, len(r.MissingSubagents)))
+	}
+	add("项目快照  ", fmt.Sprintf("上传 %d 份（按目录去重）", r.Workspaces))
+	add("各类清单  ", fmt.Sprintf("上传 %d 份（含 manifest 和排除记录）", r.Lists.Files))
+	add("预计总量  ", fmt.Sprintf("%s · %d 份文件", formatBytes(r.Total.Bytes), r.Total.Files))
+	add("体积分项  ", fmt.Sprintf("轨迹 %s · 快照 %s · 清单 %s", formatBytes(r.Trajectories.Bytes), formatBytes(r.Snapshots.Bytes), formatBytes(r.Lists.Bytes)))
+	secret := exclusions["secret_detected"]
+	types, sizes := exclusions["large_file_type"], exclusions["large_file_size"]
+	add("文件排除  ", fmt.Sprintf("敏感信息 %d 项 · 大文件 %d 项 · 其他 %d 项", secret, types+sizes, max(0, m.Summary.Excluded-secret-types-sizes)))
+	if types+sizes > 0 {
+		add("大文件    ", fmt.Sprintf("文件类型排除 %d 项 · 体积超限 %d 项，正文不上传", types, sizes))
+	}
+	missing := append(append([]*core.Session{}, r.MissingMain...), r.MissingSubagents...)
+	if len(missing) > 0 {
+		add("轨迹未上传", missingTrajectorySummary(missing))
+	}
+	if r.ReadyMain+r.ReadySubagents == 0 && r.Workspaces == 0 {
+		lines = append(lines, u.Style("33", "本次只有清单，未包含轨迹或项目快照。"))
+	}
+	return lines
+}
+
 func uploadReviewLines(u *ui.UI, m *core.Manifest, inventory uploadInventory, exclusions map[string]int, manifestPath string) []string {
 	r := inventory
 	lines := []string{u.Style("32", "✓ 检测与打包完成，等待上传确认。")}

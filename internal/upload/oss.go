@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
@@ -34,9 +36,20 @@ type Uploader struct {
 	HTTP           *http.Client
 	creds          api.Credentials
 	client         *oss.Client
+	networkBytes   atomic.Int64
 	State          *State
 	Progress       func(completed, total int, bytes int64)
 	ObjectProgress func(index, count int, name string, transferred, objectSize, totalTransferred, totalSize int64)
+}
+
+const defaultUploadParallel = 6
+
+func uploadParallelism() int {
+	value, err := strconv.Atoi(os.Getenv("TRACE_DOCK_UPLOAD_PARALLEL"))
+	if err == nil && value >= 1 && value <= 16 {
+		return value
+	}
+	return defaultUploadParallel
 }
 
 func (u *Uploader) Save() error {
@@ -47,7 +60,7 @@ func (u *Uploader) refresh(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
-	if !strings.HasPrefix(c.Prefix, "trajectory/token=") || !strings.HasSuffix(c.Prefix, "/job="+u.JobID+"/") || c.AccessKeyID == "" || c.AccessKeySecret == "" || c.SecurityToken == "" {
+	if !strings.HasPrefix(c.Prefix, "trajectory/participant_id=") || !strings.HasSuffix(c.Prefix, "/job="+u.JobID+"/") || c.AccessKeyID == "" || c.AccessKeySecret == "" || c.SecurityToken == "" {
 		return fmt.Errorf("invalid job credentials")
 	}
 	if c.Region == "" {
@@ -58,11 +71,12 @@ func (u *Uploader) refresh(ctx context.Context) error {
 	}
 	provider := credentials.NewStaticCredentialsProvider(c.AccessKeyID, c.AccessKeySecret, c.SecurityToken)
 	cfg := oss.LoadDefaultConfig().WithRegion(c.Region).WithEndpoint(c.Endpoint).WithCredentialsProvider(provider).WithConnectTimeout(30 * time.Second).WithReadWriteTimeout(5 * time.Minute).WithUsePathStyle(c.PathStyle)
-	u.client = oss.NewClient(cfg)
+	u.client = oss.NewClient(cfg, u.trackNetworkBytes)
 	u.creds = c
 	return nil
 }
 func (u *Uploader) Run(ctx context.Context) error {
+	u.networkBytes.Store(0)
 	if u.State == nil || u.State.ManifestCRC64 == "" {
 		return fmt.Errorf("missing confirmed upload state")
 	}
@@ -74,7 +88,7 @@ func (u *Uploader) Run(ctx context.Context) error {
 		return e
 	}
 	manifestCRC64, _, e := core.CRC64File(filepath.Join(u.Dir, "manifest.json"))
-	if e != nil || manifest.Schema != core.ManifestSchema || manifestCRC64 != u.State.ManifestCRC64 || manifest.SelectionSHA256 != u.State.SelectionSHA || manifest.JobID != u.JobID || !strings.HasPrefix(manifest.ObjectPrefix, "trajectory/token=") || !strings.HasSuffix(manifest.ObjectPrefix, "/job="+u.JobID+"/") || len(u.State.Objects) != len(manifest.Artifacts)+1 {
+	if e != nil || manifest.Schema != core.ManifestSchema || manifestCRC64 != u.State.ManifestCRC64 || manifest.SelectionSHA256 != u.State.SelectionSHA || manifest.JobID != u.JobID || !strings.HasPrefix(manifest.ObjectPrefix, "trajectory/participant_id=") || !strings.HasSuffix(manifest.ObjectPrefix, "/job="+u.JobID+"/") || len(u.State.Objects) != len(manifest.Artifacts)+1 {
 		if e == nil && manifest.Schema != core.ManifestSchema {
 			return fmt.Errorf("本地任务使用旧采集协议 %s，当前版本为 %s；请新建任务后重新采集", manifest.Schema, core.ManifestSchema)
 		}
@@ -174,7 +188,7 @@ func (u *Uploader) put(ctx context.Context, o *Object, progress func(transferred
 		opt.EnableCheckpoint = true
 		opt.CheckpointDir = filepath.Join(u.Dir, "staging", ".oss-checkpoints")
 		opt.PartSize = 16 << 20
-		opt.ParallelNum = 3
+		opt.ParallelNum = uploadParallelism()
 	})
 	result, e := uploader.UploadFile(ctx, &oss.PutObjectRequest{
 		Bucket: oss.Ptr(u.creds.Bucket),
@@ -210,7 +224,11 @@ func Prepare(dir string, m *core.Manifest) (*State, error) {
 			case "trajectory", "workspace":
 				ext := ".jsonl"
 				if a.Kind == "workspace" {
-					ext = ".tar.zst"
+					ext = ".tar.gz"
+					if strings.HasSuffix(a.Key, ".tar.zst") {
+						// Resume jobs created before the public archive format changed.
+						ext = ".tar.zst"
+					}
 				}
 				p = filepath.Join(dir, "staging", a.ID+ext)
 			case "large_files":

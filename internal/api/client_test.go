@@ -47,6 +47,21 @@ func TestNoBodyEndpointsDoNotSendJSONBody(t *testing.T) {
 	}
 }
 
+func TestCallReportsStableAPIErrorCode(t *testing.T) {
+	client := New("https://collector.test", "token")
+	client.HTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusConflict,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"code":"invalid_state_transition"}`)),
+		}, nil
+	})}
+	err := client.Call(context.Background(), http.MethodPatch, "/v1/collections/job", map[string]string{"state": "uploading"}, nil, "")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 409: invalid_state_transition") {
+		t.Fatalf("API error did not include stable code: %v", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

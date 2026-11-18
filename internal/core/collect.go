@@ -2,10 +2,10 @@ package core
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/klauspost/compress/zstd"
 	"io"
 	"os"
 	"path"
@@ -572,16 +572,12 @@ func (c *Collector) snapshotLegacy(ctx context.Context, m *Manifest, sessions []
 		return nil, changed, exclusions, e
 	}
 	sort.Strings(files)
-	dst := filepath.Join(c.Dir, "staging", wid+".tar.zst")
+	dst := filepath.Join(c.Dir, "staging", wid+".tar.gz")
 	out, e := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if e != nil {
 		return nil, changed, exclusions, e
 	}
-	zw, e := zstd.NewWriter(out, zstd.WithEncoderConcurrency(1), zstd.WithEncoderLevel(zstd.SpeedDefault))
-	if e != nil {
-		out.Close()
-		return nil, changed, exclusions, e
-	}
+	zw := gzip.NewWriter(out)
 	tw := tar.NewWriter(zw)
 	for _, rel := range files {
 		if e = ctx.Err(); e != nil {

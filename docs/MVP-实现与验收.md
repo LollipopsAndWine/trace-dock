@@ -4,16 +4,16 @@
 
 已实现默认逐项问答、隐藏 token、身份核对、单工具选择、可搜索分页的根会话多选，以及需分别明确确认的本机采集与最终上传授权。发现与采集分离；本地登记选择和时间后才进入 workspace 正文读取。恢复沿用原 Job、已登记源文件、冻结规则及已确认归档。Codex/Claude 的未知或混合 schema 不再限制选择和原文归档，缺失元数据记未知，敏感信息检测和 CRC64 完整性校验继续执行；Codex 子 agent 依据 rollout session_meta 的父线程 ID 关联，Claude 子 agent 依据明确字段或目录关联，均支持深层子 agent；resume/fork 保留最长版本与 aliases。
 
-workspace 使用项目证据、所有者与路径边界进行保守分类，不用 Git 仓库数量否定已锚定项目内的子模块。unknown、跨人、产物目录默认只记录路径。纯 Go 扫描使用 guiji 的 16 条 Gitleaks 高置信度规则与明文凭据兜底；扫描失败或文件持续变化时排除。确定性 tar.zst 保存普通文件、空目录、必要执行权限和安全的目录内链接。`.git/` 接受密钥扫描但绕过大文件排除。归档不修改源文件。
+workspace 使用项目证据、所有者与路径边界进行保守分类，不用 Git 仓库数量否定已锚定项目内的子模块。unknown、跨人、产物目录默认只记录路径。纯 Go 扫描使用 guiji 的 16 条 Gitleaks 高置信度规则与明文凭据兜底；扫描失败或文件持续变化时排除。确定性 tar.gz 保存普通文件、空目录、必要执行权限和安全的目录内链接。`.git/` 接受密钥扫描但绕过大文件排除。归档不修改源文件。
 
-服务端两张表，预登记身份 HMAC 摘要、创建幂等、任务归属与状态约束、冻结规则、延迟 STS、OSS 对象大小/CRC64 校验、幂等回执已实现。服务端只下载小型 manifest，使用 `HeadObject` 校验大对象元数据，不下载轨迹或 workspace 正文。普通 API 超时 45 秒，完成校验不再需要大对象下载超时。OSS 对象键按 Job 隔离：`trajectory/token=<token>/dt=<yyyy-MM-dd>/job=<job-id>/`，由服务端创建任务时冻结并返回。当前 token 原文进入 OSS object key 和 manifest.object_prefix，与 token 不进入 OSS 的安全目标冲突，需在生产部署前处理。真实云账号和服务地址由部署环境提供。
+服务端两张表，预登记身份 HMAC 摘要、创建幂等、任务归属与状态约束、冻结规则、延迟 STS、OSS 对象大小/CRC64 校验、幂等回执已实现。服务端只下载小型 manifest，使用 `HeadObject` 校验大对象元数据，不下载轨迹或 workspace 正文。普通 API 超时 45 秒，完成校验不再需要大对象下载超时。新 OSS 对象键按稳定 participant ID 和 Job 隔离：`trajectory/participant_id=<participant-id>/dt=<yyyy-MM-dd>/job=<job-id>/`。manifest schema 为 `1.2`；旧 schema `1.1` 的未完成任务需重新创建，旧 OSS 对象不会自动迁移或删除。
 
 | 自动验证 | 结果 |
 | --- | --- |
 | Go 单测与 `go vet ./...` | 通过；覆盖未知/混合格式及损坏 JSONL 的原文归档、未知格式密钥排除、稳定文件 ID、Windows 路径语义、alias/子 agent、分类、规则优先级、扫描、归档、恢复范围与对象跳过 |
 | Python 服务端 unittest | 通过；覆盖无效/撤销身份、跨人任务隔离、并发创建幂等、单工具约束、授权与 STS 门槛、范围冻结、摘要校验与完成幂等 |
 | 更新时间及历史库迁移 | SQLite 验证通过；覆盖两表插入/实际更新、无变化更新、幂等重试、事务回滚、签发/撤销、历史回填及并发初始化；PostgreSQL 迁移与触发器已实现，真实 PostgreSQL 环境待验收 |
-| CGO_ENABLED=0 交叉编译 | Linux amd64/arm64、macOS amd64/arm64、Windows amd64，生成裸二进制、deb/rpm/pkg、tar.gz/zip 和 SHA256SUMS |
+| CGO_ENABLED=0 交叉编译 | Linux amd64/arm64、macOS amd64/arm64、Windows amd64/arm64，生成裸二进制、deb/rpm/pkg、tar.gz/zip 和 SHA256SUMS |
 | Linux 启动检查 | `--help`、`--version` 通过 |
 
 系统预装 Go 1.27.4 的标准库含冲突文件，项目的 Makefile 与跨平台发布工具固定使用独立的 Go 1.26.5 工具链，未修改系统 Go。纯 Go macOS 安装包库要求该版本。首次执行会由 Go 自动下载工具链；已缓存后可直接复用。`GOTOOLCHAIN` 可显式覆盖为兼容版本。

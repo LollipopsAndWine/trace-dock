@@ -87,6 +87,46 @@ func TestReleaseArchivesPreserveBinaryAndMode(t *testing.T) {
 	}
 }
 
+func TestReleaseTargetsIncludeWindowsARM64(t *testing.T) {
+	for _, target := range targets {
+		if target.GOOS == "windows" && target.GOARCH == "arm64" && target.Suffix == ".exe" {
+			return
+		}
+	}
+	t.Fatal("release target matrix does not include Windows ARM64")
+}
+
+func TestPublicArtifactsContainPortableAndSystemPackages(t *testing.T) {
+	want := map[string]bool{
+		"trace-dock-linux-amd64.tar.gz":  false,
+		"trace-dock-linux-arm64.tar.gz":  false,
+		"trace-dock-darwin-amd64.tar.gz": false,
+		"trace-dock-darwin-arm64.tar.gz": false,
+		"trace-dock-windows-amd64.zip":   false,
+		"trace-dock-windows-arm64.zip":   false,
+		"trace-dock-linux-amd64.deb":     false,
+		"trace-dock-linux-arm64.deb":     false,
+		"trace-dock-linux-amd64.rpm":     false,
+		"trace-dock-linux-arm64.rpm":     false,
+		"trace-dock-darwin-amd64.pkg":    false,
+		"trace-dock-darwin-arm64.pkg":    false,
+		"trace-dock-windows-amd64.exe":   false,
+		"trace-dock-windows-arm64.exe":   false,
+	}
+	for _, artifact := range publicArtifacts() {
+		seen, ok := want[artifact]
+		if !ok || seen {
+			t.Fatalf("unexpected or duplicate public artifact: %s", artifact)
+		}
+		want[artifact] = true
+	}
+	for artifact, seen := range want {
+		if !seen {
+			t.Errorf("missing public artifact: %s", artifact)
+		}
+	}
+}
+
 func TestCIRequiresOneCanonicalVersionTag(t *testing.T) {
 	for _, test := range []struct{ input, tag string }{
 		{"v0.1.1\n", "v0.1.1"},
@@ -163,6 +203,9 @@ func TestGitHubReleaseWorkflow(t *testing.T) {
 	}
 	if !hasRunCommand(publishSteps, "gh release create") {
 		t.Fatal("publish job must create a GitHub release")
+	}
+	if !hasRunCommand(publishSteps, "done < dist/SHA256SUMS") || hasRunCommand(publishSteps, "find dist") {
+		t.Fatal("GitHub Release must only upload assets from the public checksum list")
 	}
 }
 

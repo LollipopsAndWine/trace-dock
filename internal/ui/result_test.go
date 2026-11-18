@@ -22,7 +22,7 @@ func TestCompletionReplacesUploadAndQuestionHistory(t *testing.T) {
 		OtherExclusionReasons: "私有 Agent 状态文件，不采集 3 项",
 	})
 	// A late update must not add the upload progress back to the completed screen.
-	u.UploadProgress(248 << 20)
+	u.UploadProgress(248<<20, 248<<20)
 	u.RefreshVerification()
 	got := output.String()
 	for _, unwanted := range []string{"确认向 OSS", "对象 5/5", "Ctrl+C", "正在校验", "MiB/s", "━━"} {

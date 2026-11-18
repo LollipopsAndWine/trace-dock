@@ -301,7 +301,7 @@ func validateChildren(parent, name string) error {
 			if info.IsDir() && entry.Name() != ".oss-checkpoints" {
 				return fmt.Errorf("staging 下含未知目录 %q，已拒绝删除", entry.Name())
 			}
-			if !info.IsDir() && !(strings.HasSuffix(entry.Name(), ".jsonl") || strings.HasSuffix(entry.Name(), ".tar.zst")) {
+			if !info.IsDir() && !(strings.HasSuffix(entry.Name(), ".jsonl") || strings.HasSuffix(entry.Name(), ".tar.gz") || strings.HasSuffix(entry.Name(), ".tar.zst")) {
 				return fmt.Errorf("staging 下含未知文件 %q，已拒绝删除", entry.Name())
 			}
 			if info.IsDir() {

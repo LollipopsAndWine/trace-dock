@@ -90,7 +90,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mapfile -d '' assets < <(find dist -type f -print0)
+          (cd dist && sha256sum -c SHA256SUMS)
+          assets=(dist/SHA256SUMS)
+          while read -r checksum artifact; do
+            assets+=("dist/$artifact")
+          done < dist/SHA256SUMS
           gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
             --verify-tag \
             --title "trace-dock $GITHUB_REF_NAME" \

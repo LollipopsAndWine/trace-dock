@@ -1,14 +1,16 @@
 # CLI / server MVP JSON 契约 v1
 
-所有 API 请求使用 `Authorization: Bearer <个人 token>` 和 JSON；身份验证响应不返回 token。CLI 拒绝重定向，生产 API/OSS 使用 HTTPS。仅测试时可通过 `--allow-http` 或 `TRACE_DOCK_ALLOW_HTTP=1` 显式允许 HTTP 服务地址。服务端仅接收控制字段和 manifest 摘要，文件正文由 CLI 直传 OSS。当前创建任务返回的 object_prefix 包含 token 原文，该值会进入 OSS object key 和 manifest；这与 token 不应进入 OSS 的安全目标冲突，属于待解决的设计问题。
+所有 API 请求使用 `Authorization: Bearer <个人 token>` 和 JSON；身份验证响应不返回 token。CLI 拒绝重定向，生产 API/OSS 使用 HTTPS。仅测试时可通过 `--allow-http` 或 `TRACE_DOCK_ALLOW_HTTP=1` 显式允许 HTTP 服务地址。服务端仅接收控制字段和 manifest 摘要，文件正文由 CLI 直传 OSS。当前 manifest schema 为 `1.2`；对象前缀使用稳定参与者 ID，不包含 Bearer token 或邮箱。旧 manifest schema `1.1` 使用过含 token 的前缀，不支持继续恢复，需重新创建任务。
 
 仅支持当前按 Job 隔离的对象格式。旧格式任务直接清理，不提供恢复或迁移；当前格式任务仍支持中断恢复。
 
 `POST /v1/identity/verify` 不需要请求体，只需携带 `Authorization: Bearer <个人 token>`，响应：
 
 ```json
-{"participant_id":"pseudonymous-id","masked_email":"p***@example.com"}
+{"participant_id":"random-id-for-this-token","masked_email":"p***@example.com"}
 ```
+
+`participant_id` 与当前 Bearer token 一一对应；同一邮箱可以关联多个 participant ID 和多个同时有效的 token。`revoke <email>` 撤销该邮箱下所有活动 token。
 
 `POST /v1/collections` 必须携带 `Idempotency-Key`，值与 `client_operation_id` 相同。CLI 在发请求前持久化 operation ID。
 
@@ -21,7 +23,7 @@
 ```json
 {
   "job_id":"random-job-id",
-	"object_prefix":"trajectory/token=<token>/dt=2026-11-12/job=<job-id>/",
+"object_prefix":"trajectory/participant_id=<participant-id>/dt=2026-11-12/job=<job-id>/",
   "rules":{
     "classification_version":"1.0.0",
     "secret_version":"2.2.0",
@@ -52,10 +54,12 @@
 
 打包后先 PATCH `{"state":"awaiting_upload_confirmation"}`。选择摘要是根 session ID 排序后、紧凑 JSON 数组 UTF-8 的 SHA-256。选择与授权时间一旦登记即冻结；后续更新不能扩展数量或替换摘要。客户端不能上报已校验字节数或把任务标为 completed。中断可 PATCH `resumable`，拒绝本机采集可 PATCH `cancelled`。
 
+如果本机缺少采集完成标记，需要对原先同一选择范围重新打包，可从 `awaiting_upload_confirmation` 或 `resumable` 状态 PATCH 回 `collecting`。服务端要求参与者、选择摘要、数量和采集授权时间保持一致，并清除旧上传确认与 manifest 校验记录；重新打包后必须再次确认上传。
+
 `POST /v1/collections/{job_id}/credentials` 不需要请求体。必须已确认上传，响应：
 
 ```json
-{"endpoint":"https://oss-cn-hangzhou.aliyuncs.com","bucket":"bucket-name","prefix":"trajectory/token=<token>/dt=2026-11-12/job=<job-id>/","region":"cn-hangzhou","access_key_id":"temporary","access_key_secret":"temporary","security_token":"temporary","expiration":"2026-11-12T11:05:00Z","path_style":false}
+{"endpoint":"https://oss-cn-hangzhou.aliyuncs.com","bucket":"bucket-name","prefix":"trajectory/participant_id=<participant-id>/dt=2026-11-12/job=<job-id>/","region":"cn-hangzhou","access_key_id":"temporary","access_key_secret":"temporary","security_token":"temporary","expiration":"2026-11-12T11:05:00Z","path_style":false}
 ```
 
 STS 只在内存中使用，权限限于当前 Job 前缀。CLI 使用阿里云官方 OSS Go SDK v2 的 `Client` 和 `Uploader`，由 SDK 负责签名、重试、multipart/checkpoint 和 CRC64；服务端使用官方 OSS Python SDK v2 读取对象元数据。CLI 在 manifest 中保存对象大小和 CRC64；服务端只下载小型 manifest 正文，随后通过 `HeadObject` 比较对象大小和 `x-oss-hash-crc64ecma`，不下载轨迹、workspace 或清单对象正文。
@@ -63,7 +67,7 @@ STS 只在内存中使用，权限限于当前 Job 前缀。CLI 使用阿里云�
 `POST /v1/collections/{job_id}/complete` 请求：
 
 ```json
-{"manifest_key":"trajectory/token=<token>/dt=2026-11-12/job=<job-id>/manifest.json","manifest_crc64":"0-18446744073709551615","manifest_size_bytes":12345}
+{"manifest_key":"trajectory/participant_id=<participant-id>/dt=2026-11-12/job=<job-id>/manifest.json","manifest_crc64":"0-18446744073709551615","manifest_size_bytes":12345}
 ```
 
 服务端从 OSS 校验 manifest CRC64、对象大小和 CRC64，并校验选择范围、规则、会话统计及 manifest 中的对象索引。成功返回 receipt：`job_id`、`participant_id`、`state=completed`、`verification=crc64_verified`、`manifest_key`、`manifest_crc64`、`uploaded_bytes`、`verified_object_count`、`completed_at`、`summary`。重复提交相同摘要返回同一回执，不重复计数；不同摘要返回 409。manifest 不包含自身摘要，receipt 覆盖整个冻结 manifest 及其中所有对象的最终校验结果。

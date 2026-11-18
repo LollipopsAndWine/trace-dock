@@ -132,19 +132,12 @@ func (u *UI) enterAlternateScreen() func() {
 	if !u.TTY || !u.ANSI {
 		return func() {}
 	}
-	u.Printf("\x1b[?1049h\x1b[2J\x1b[H")
-	return func() { u.Printf("\x1b[?1049l") }
-}
-
-// enableMouseTracking captures terminal mouse events while a raw keyboard
-// menu is active. The menu intentionally ignores mouse input, including the
-// wheel, so the terminal cannot scroll the alternate screen behind it.
-func (u *UI) enableMouseTracking() func() {
-	if !u.TTY || !u.ANSI {
-		return func() {}
-	}
-	u.Printf("\x1b[?1000h\x1b[?1006h")
-	return func() { u.Printf("\x1b[?1006l\x1b[?1000l") }
+	// A previous interrupted run may have left xterm mouse reporting enabled.
+	// Disable it so terminal text selection with the left mouse button works.
+	// Also save and disable Alternate Scroll (1007), which can otherwise turn
+	// wheel movements into arrow keys even when mouse reporting is disabled.
+	u.Printf("\x1b[?1007s\x1b[?1006l\x1b[?1000l\x1b[?1049h\x1b[?1007l\x1b[2J\x1b[H")
+	return func() { u.Printf("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?1007r") }
 }
 
 func displayWidth(s string) int {
@@ -531,6 +524,7 @@ func (u *UI) Info(lines ...string) {
 	u.info = append([]string(nil), lines...)
 	u.renderBase()
 }
+
 func (u *UI) Record(label, value string) {
 	u.history = append(u.history, entry{label: label, value: value})
 	u.renderBase()
@@ -978,8 +972,6 @@ func (u *UI) Choose(prompt string, items []string, initial int) (int, error) {
 		return 0, e
 	}
 	defer restore()
-	restoreMouse := u.enableMouseTracking()
-	defer restoreMouse()
 	idx := initial
 	for {
 		u.beginFrame()
@@ -1046,8 +1038,6 @@ func (u *UI) ChooseScope(sessions []*core.Session) (bool, error) {
 		return false, err
 	}
 	defer restore()
-	restoreMouse := u.enableMouseTracking()
-	defer restoreMouse()
 
 	choice, cursor, query := 0, 0, ""
 	search, detail := false, false
@@ -1290,8 +1280,6 @@ func (u *UI) Select(sessions []*core.Session) ([]*core.Session, string, error) {
 		return nil, "", e
 	}
 	defer restore()
-	restoreMouse := u.enableMouseTracking()
-	defer restoreMouse()
 	selected := map[*core.Session]bool{}
 	cursor := 0
 	query := ""

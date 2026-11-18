@@ -395,7 +395,7 @@ func httpAllowed(flag bool) bool {
 }
 
 func validObjectPrefix(prefix, jobID string) bool {
-	return strings.HasPrefix(prefix, "trajectory/token=") &&
+	return strings.HasPrefix(prefix, "trajectory/participant_id=") &&
 		strings.Contains(prefix, "/dt=") &&
 		strings.HasSuffix(prefix, "/job="+jobID+"/")
 }
@@ -495,6 +495,18 @@ func resumeCollection(ctx context.Context, u *ui.UI, client *api.Client, dir, id
 	}
 	if e = client.Patch(ctx, id, map[string]any{"state": "collecting", "selection_mode": m.SelectionMode, "selected_count": len(m.Selection), "consented_at": m.ConsentedAt, "selection_sha256": m.SelectionSHA256}); e != nil {
 		return e
+	}
+	// Repacking invalidates the previous upload confirmation and uploaded-object
+	// inventory; the user will review and confirm the rebuilt artifacts again.
+	m.UploadConfirmedAt = nil
+	if e = core.WriteJSON(filepath.Join(dir, "manifest.json"), &m); e != nil {
+		return e
+	}
+	if err := os.Remove(filepath.Join(dir, "upload-state.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "staging", ".oss-checkpoints")); err != nil {
+		return err
 	}
 	m.Sessions = core.RefreshSelected(m.Sessions, home)
 	u.Step("05/07", "恢复扫描并打包")
@@ -613,8 +625,8 @@ func exclusionReasonLabel(reason string) string {
 		"scanner_or_copy_failed":             "密钥扫描或复制失败",
 		"changed_during_collect":             "采集期间源文件发生变化",
 		"cross_owner_requires_authorization": "文件所有者不同，未读取",
-		"unreadable":                          "目录项无法读取",
-		"unsafe_path":                         "不安全的相对路径",
+		"unreadable":                         "目录项无法读取",
+		"unsafe_path":                        "不安全的相对路径",
 		"unreadable_link":                    "符号链接无法读取",
 		"large_file_type":                    "按文件类型排除正文，仅记路径",
 		"large_file_size":                    "超过体积阈值，仅记路径",
@@ -657,8 +669,9 @@ func finish(ctx context.Context, u *ui.UI, client *api.Client, dir, id string, a
 		return e
 	}
 	inventory := inspectUpload(&m, int64(len(b)))
-	u.Info(uploadReviewLines(u, &m, inventory, exclusionCounts, filepath.Join(dir, "manifest.json"))...)
-	yes, e := u.Confirm("确认上传以上内容？")
+	summary := uploadReviewSummaryLines(u, &m, inventory, exclusionCounts)
+	review := uploadReviewLines(u, &m, inventory, exclusionCounts, filepath.Join(dir, "manifest.json"))
+	yes, e := u.ConfirmReview("确认上传以上内容？", summary, review)
 	if e != nil {
 		return e
 	}
@@ -666,15 +679,15 @@ func finish(ctx context.Context, u *ui.UI, client *api.Client, dir, id string, a
 		u.Finish("已保留本地任务；本次未上传。", "Job ID："+id, "本机清单："+filepath.Join(dir, "manifest.json"))
 		return nil
 	}
+	if m.UploadConfirmedAt == nil {
+		t := time.Now().UTC().Truncate(time.Microsecond)
+		m.UploadConfirmedAt = &t
+		if e = core.WriteJSON(filepath.Join(dir, "manifest.json"), &m); e != nil {
+			return e
+		}
+	}
 	state, e := upload.Load(dir)
 	if os.IsNotExist(e) {
-		if m.UploadConfirmedAt == nil {
-			t := time.Now().UTC().Truncate(time.Microsecond)
-			m.UploadConfirmedAt = &t
-			if e = core.WriteJSON(filepath.Join(dir, "manifest.json"), &m); e != nil {
-				return e
-			}
-		}
 		state, e = upload.Prepare(dir, &m)
 	}
 	if e != nil {
@@ -763,13 +776,13 @@ func uploadWithProgress(ctx context.Context, u *ui.UI, uploader *upload.Uploader
 			case <-progressCtx.Done():
 				return
 			case <-ticker.C:
-				u.UploadProgress(transferred.Load())
+				u.UploadProgress(transferred.Load(), uploader.NetworkBytes())
 			}
 		}
 	}()
 	err := uploader.Run(ctx)
 	stop()
 	<-done
-	u.UploadProgress(transferred.Load())
+	u.UploadProgress(transferred.Load(), uploader.NetworkBytes())
 	return err
 }

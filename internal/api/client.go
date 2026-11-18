@@ -109,6 +109,7 @@ func (c *Client) Call(ctx context.Context, method, path string, input, output an
 				}
 				return nil
 			}
+			responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 			resp.Body.Close()
 			retry = resp.StatusCode == 429 || resp.StatusCode >= 500
 			if n, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil && n > 0 {
@@ -118,6 +119,12 @@ func (c *Client) Call(ctx context.Context, method, path string, input, output an
 				delay = time.Duration(n) * time.Second
 			}
 			if !retry {
+				var payload struct {
+					Code string `json:"code"`
+				}
+				if json.Unmarshal(responseBody, &payload) == nil && payload.Code != "" {
+					return fmt.Errorf("API 请求失败（HTTP %d: %s）", resp.StatusCode, payload.Code)
+				}
 				return fmt.Errorf("API 请求失败（HTTP %d）", resp.StatusCode)
 			}
 		}

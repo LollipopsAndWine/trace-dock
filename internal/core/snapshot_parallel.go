@@ -2,6 +2,7 @@ package core
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"hash"
@@ -13,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/klauspost/compress/zstd"
 )
 
 // snapshot scans files in parallel, then writes the archive in sorted path
@@ -180,18 +179,14 @@ sendJobs:
 	sort.Strings(files)
 	sort.SliceStable(exclusions, func(i, j int) bool { return exclusions[i].Path < exclusions[j].Path })
 
-	dst := filepath.Join(c.Dir, "staging", wid+".tar.zst")
+	dst := filepath.Join(c.Dir, "staging", wid+".tar.gz")
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, Artifact{}, false, exclusions, err
 	}
 	digest := NewCRC64()
 	dw := &digestWriter{w: out, h: digest}
-	zw, err := zstd.NewWriter(dw, zstd.WithEncoderConcurrency(1), zstd.WithEncoderLevel(zstd.SpeedDefault))
-	if err != nil {
-		out.Close()
-		return nil, Artifact{}, false, exclusions, err
-	}
+	zw := gzip.NewWriter(dw)
 	tw := tar.NewWriter(zw)
 	for _, rel := range files {
 		if err = ctx.Err(); err != nil {
@@ -230,7 +225,7 @@ sendJobs:
 	if err != nil {
 		return nil, Artifact{}, changed, exclusions, err
 	}
-	archive := Artifact{ID: wid, Kind: "workspace", Key: fmt.Sprintf("%sworkspaces/%s/workspace.tar.zst", m.ObjectPrefix, wid), Size: dw.n, CRC64: CRC64String(digest), LocalPath: dst, Verification: "pending", WorkspaceID: wid}
+	archive := Artifact{ID: wid, Kind: "workspace", Key: fmt.Sprintf("%sworkspaces/%s/workspace.tar.gz", m.ObjectPrefix, wid), Size: dw.n, CRC64: CRC64String(digest), LocalPath: dst, Verification: "pending", WorkspaceID: wid}
 	return large, archive, changed, exclusions, nil
 }
 

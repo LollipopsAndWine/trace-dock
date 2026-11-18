@@ -10,7 +10,7 @@
 
 RFC-01 是原始需求文档，保留原文，不随实现调整修改。Codex/Claude 元数据提取、workspace 分类、敏感信息检测、大文件处理、去重及有效性判定的当前实现与已确认调整，统一记录在本文和 MVP 技术方案中；与原始需求有差异时，在技术方案说明当前行为，不回写原需求文档。
 
-[MVP 技术方案](./CLI-MVP-技术方案.md) 只实现本文 4.1 的采集上传闭环，使用预登记邮箱/token 和两张表，暂不实现混合工具采集、额外子命令、看板和管理界面。数据处理和验收仍执行相同规则；本文的扩展能力不构成 MVP 可以省略密钥扫描、子 agent、分级、去重或验收的依据。
+[MVP 技术方案](./CLI-MVP-技术方案.md) 只实现本文 4.1 的采集上传闭环，使用预登记邮箱/token 及 users、participants、collections 三张表，暂不实现混合工具采集、额外子命令、看板和管理界面。邮箱在 users 中唯一；participant ID 与 token 一一对应，同一邮箱可关联多条 participants 记录。数据处理和验收仍执行相同规则；本文的扩展能力不构成 MVP 可以省略密钥扫描、子 agent、分级、去重或验收的依据。
 
 安装并启动：
 
@@ -150,7 +150,7 @@ CLI 按顺序逐项提问，每次只展开当前问题。用户按 Enter 确认
 
 本机处理进度按会话轨迹和各个 workspace 分别保存，以一次完整状态更新界面；workspace 扫描或并行任务不能覆盖其他阶段的最后状态。检查单个会话时显示该会话 ID 和当前计数；全部检查完后保留“✓ 会话轨迹检查完成 <最后会话 ID> N/N”，其中 N 表示已检查数，包含检查后被排除的轨迹，不表示实际上传数量。即使阶段在两次界面刷新之间快速完成，也必须显示最终会话 ID 和计数。
 
-在用户已明确选择和授权的 workspace 范围内，最多 4 个 worker 并行执行文件扫描、敏感信息检测、暂存及大文件检查；不同 workspace 仍可并行。并行只改变本机处理耗时，不扩大选择范围、不跳过密钥或大文件规则。所有通过检查的文件仍按原相对路径顺序写入确定性 tar.zst，保持目录结构、文件顺序和重复采集的 CRC64 不变。
+在用户已明确选择和授权的 workspace 范围内，最多 4 个 worker 并行执行文件扫描、敏感信息检测、暂存及大文件检查；不同 workspace 仍可并行。并行只改变本机处理耗时，不扩大选择范围、不跳过密钥或大文件规则。所有通过检查的文件仍按原相对路径顺序写入确定性 tar.gz，保持目录结构、文件顺序和重复采集的 CRC64 不变。
 
 完成本机密钥扫描后，分别显示已选主会话/关联子 agent 数、实际待上传的各类轨迹数和被排除轨迹数；workspace 快照按目录去重独立计数。确认页按上传内容、上传体积、排除情况三个区域分组，数量与体积分项对齐。主会话或子 agent 轨迹未上传时最多展开三条明细，分别标注项目目录名、完整会话 ID、排除原因和项目快照处理结果；ID 不截短，窄屏自动换行。单条轨迹明细与全部排除记录汇总分开显示；汇总明确覆盖本次所有选中轨迹和去重项目目录，按排除记录计数，包含文件、目录和链接。敏感信息命中文件不上传、大文件正文不上传但保留路径清单、其他规则排除项分别列出。完整明细通过本地清单路径查看。预计上传合计覆盖本次所选内容经排除和压缩后的全部轨迹、快照、manifest 及各类清单，显示轨迹/快照/清单的体积分项；被排除文件和大文件正文不计入。确认时间写入 manifest 后，最终精确总字节数以冻结上传状态和回执为准。确认选项默认“是”，用户仍须按 Enter 明确确认后才申请 STS 并传输内容；选择“否”则保留本地导出任务，稍后可 upload。该确认不会自动加入未选中的会话。
 
@@ -158,7 +158,7 @@ CLI 按顺序逐项提问，每次只展开当前问题。用户按 Enter 确认
 
 **⑥ 上传选中内容**
 
-上传页收起逐项问答记录，显示服务器、工具、已选范围、实际上传的主会话轨迹/子 agent 轨迹/去重快照数量及扫描处理摘要；有轨迹被排除时显示数量提示。绿色传输进度条按本次选中范围的总字节数计算，下方显示已传/总大小、平均速度和预计剩余时间；恢复时已完成对象计入传输进度，但不计入本次传输速度。字节传输结束后立即收起百分比进度条，不保留 100% 完成样式；提交完成校验时切换为“服务端校验（尚未完成）”，持续刷新等待动画和校验等待时长，并明确提示“任务尚未完成，请保持终端开启”。校验阶段不展示未经服务端提供的百分比或预计完成时间；服务端返回 completed 且本地保存回执后才进入结果页。校验失败或中断显示可恢复状态。传输中 Ctrl+C 暂停后保留本地任务；恢复时沿用已确认的清单，不自动扩大范围。
+上传页收起逐项问答记录，显示服务器、工具、已选范围、实际上传的主会话轨迹/子 agent 轨迹/去重快照数量及扫描处理摘要；有轨迹被排除时显示数量提示。绿色传输进度条按本次选中范围的总字节数计算，下方显示已传/总大小、最近约 5 秒的本次传输速度和预计剩余时间。速度单独统计 OSS HTTP PUT 请求体实际传输的数据（包含重传）；恢复分片和通过 HeadObject 跳过的已有对象只计入总进度，不计入本次速度。字节传输结束后立即收起百分比进度条，不保留 100% 完成样式；提交完成校验时切换为“服务端校验（尚未完成）”，持续刷新等待动画和校验等待时长，并明确提示“任务尚未完成，请保持终端开启”。校验阶段不展示未经服务端提供的百分比或预计完成时间；服务端返回 completed 且本地保存回执后才进入结果页。校验失败或中断显示可恢复状态。传输中 Ctrl+C 暂停后保留本地任务；恢复时沿用已确认的清单，不自动扩大范围。
 
 ![步骤六：上传选中内容的进度](assets/trace-dock-cli-upload.png)
 
@@ -224,7 +224,7 @@ trace-dock doctor
     large-files/<workspace-artifact-id>.jsonl
     staging/
       trajectory-<source-path-hash>.jsonl
-      <workspace-artifact-id>.tar.zst
+      <workspace-artifact-id>.tar.gz
     upload-state.json
     collection-complete.json
     receipt.json
@@ -303,7 +303,7 @@ workspace 根目录通过所有者与路径边界检查后，不再逐文件比�
 - `.git/` 目录及 pack 文件不因大文件规则出列，不列入大文件清单；密钥命中仍按整文件排除处理。
 - 当前还会跳过 workspace 内部名为 `.codex`、`.claude`、`.trace-dock`、`.credentials.json`、`logs_2.sqlite*` 的文件或目录；这阻止私有 agent 状态和热数据库进入快照。
 - 密钥命中文件及命中大文件黑名单/阈值的文件从快照出列，写入排除清单；通过密钥扫描的大文件另写入大文件清单。不修改源文件。权限不足、特殊设备和不安全链接写入排除清单。
-- 使用确定性 tar.zst：最多 4 个 worker 并行扫描/暂存文件，随后按原相对路径顺序排序写入，保留目录结构和成员顺序；mtime、uid、gid 等非必要字段归一化。轨迹扫描复制和 workspace 压缩输出分别同步计算 CRC64，避免为摘要再次完整读取已处理文件。
+- 使用确定性 tar.gz：最多 4 个 worker 并行扫描/暂存文件，随后按原相对路径顺序排序写入，保留目录结构和成员顺序；mtime、uid、gid 等非必要字段归一化。轨迹扫描复制和 workspace 压缩输出分别同步计算 CRC64，避免为摘要再次完整读取已处理文件。
 
 ### 6.3 大文件清单
 
@@ -341,7 +341,7 @@ created -> registered -> discovered -> selecting -> selected
 
 manifest 根记录 manifest_schema、job_id、participant_id、随机 device_id、采集机器名、CLI/adapter 版本、创建/采集时间、consent 版本、选择范围摘要、workspace 分级规则版本、secret rules 版本和 large-file rules 版本。device_id 为随机 UUID，不读取 MAC、硬盘序列号等硬件标识。machine_name 用于 RFC-01 要求的大文件 remote_path。
 
-本地 selection.json 保存选择模式（all / partial）、选中的 (tool, root_session_id)、关联的子轨迹、去重后的 workspace 引用和确认时间。manifest 的 selection 字段记录实际上传范围、选择清单摘要及用户最终上传确认时间；服务端统计发现数、选中数、未选中数、排除数和实际上传数。未选中项的路径与轨迹正文不上传；发现阶段仅上报计数。密钥排除等规则可以缩小实际上传范围，不能扩大；resume 沿用已确认的 selection 和 artifact 清单，不因新发现的会话而扩大范围。manifest 不含邮箱字段，但当前 object_prefix 含参与者 token 原文，故 manifest 和 OSS object key 均暴露该 token；此安全问题尚未解决。
+本地 selection.json 保存选择模式（all / partial）、选中的 (tool, root_session_id)、关联的子轨迹、去重后的 workspace 引用和确认时间。manifest 的 selection 字段记录实际上传范围、选择清单摘要及用户最终上传确认时间；服务端统计发现数、选中数、未选中数、排除数和实际上传数。未选中项的路径与轨迹正文不上传；发现阶段仅上报计数。密钥排除等规则可以缩小实际上传范围，不能扩大；resume 沿用已确认的 selection 和 artifact 清单，不因新发现的会话而扩大范围。manifest 不含邮箱或 Bearer token；schema 1.2 的 object_prefix 使用稳定 participant ID。
 
 当前 manifest 中每个 session 至少记录：
 
@@ -401,9 +401,9 @@ flowchart LR
 
 ### 9.3 PostgreSQL 表设计
 
-本节表结构是完整方案的扩展数据模型，不是当前 MVP 服务端 schema。当前 MVP 仅实现 participants 和 collections 两张表；其中每会话、artifact 索引和排除明细分别保存在 OSS manifest/JSONL，不单独写数据库行。完整方案目标中，PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据；轨迹正文、workspace 归档及完整清单保存在 OSS。表中不保存 secret 值、STS 凭证或文件内容。
+本节表结构是完整方案的扩展数据模型，不是当前 MVP 服务端 schema。当前 MVP 实现 users、participants 和 collections 三张表；其中每会话、artifact 索引和排除明细分别保存在 OSS manifest/JSONL，不单独写数据库行。完整方案目标中，PostgreSQL 保存登记、选择范围、采集结果和对象索引等元数据；轨迹正文、workspace 归档及完整清单保存在 OSS。表中不保存 secret 值、STS 凭证或文件内容。
 
-当前 MVP 的 participants 和 collections 均包含 created_at、updated_at；updated_at 由数据库触发器在记录实际变化时维护，幂等重试不刷新。历史库初始化时自动补列并按已有业务时间回填，重复初始化不重置既有更新时间；回填不能还原此前未记录的修改历史。
+当前 MVP 的 users 记录邮箱首次创建时间；participants 和 collections 包含 created_at、updated_at，updated_at 由数据库触发器在记录实际变化时维护，幂等重试不刷新。历史库初始化时自动补列并按已有业务时间回填，重复初始化不重置既有更新时间；回填不能还原此前未记录的修改历史。
 
 #### 数据表字段
 
@@ -556,7 +556,7 @@ collections.state 值域为 created、registered、discovered、selecting、sele
 当前 OSS 对象键：
 
 ```text
-trajectory/token=<token>/dt=<date>/job=<job-id>/
+trajectory/participant_id=<participant-id>/dt=<date>/job=<job-id>/
 ├── manifest.json
 │   # 每个 Job 一份；记录所选会话及 artifact 到 OSS 对象键的映射
 ├── exclusions.jsonl
@@ -568,7 +568,7 @@ trajectory/token=<token>/dt=<date>/job=<job-id>/
 │               # 每个未被排除的选中会话各一份
 └── workspaces/
     └── <workspace-artifact-id>/
-        ├── workspace.tar.zst
+        ├── workspace.tar.gz
         │   # 规范化 cwd 路径哈希生成 artifact ID；同 Job 共用 cwd 的会话共享这份采集时快照
         └── large-files.jsonl
             # 与该快照一一对应，每条仅含 relative_path、remote_path
@@ -578,7 +578,7 @@ trajectory/token=<token>/dt=<date>/job=<job-id>/
 
 当前 workspace artifact ID 为 `workspace-<SHA-256(规范化 cwd) 前24位>`；其 hash 用于 Job 内按路径去重，不是文件内容 hash。不同 Job 即使引用相同 cwd，也因外层 job 前缀不同而拥有独立对象。
 
-当前前缀中的 `<token>` 是服务端认证 token 原文，manifest.object_prefix 和 OSS object key 都包含它；这违反第 3 章“原始 token 不进入 OSS”的安全目标。RFC-01 没有规定对象键格式，但生产部署前仍须解决该技术方案内部的安全冲突；当前实现不能视为满足 token 不落 OSS 的要求。
+当前前缀中的 `<participant-id>` 是随机稳定的参与者存储标识，不是服务端认证 token，也不包含邮箱。manifest schema 1.1 使用过包含 token 的前缀；新版本升为 schema 1.2，不兼容恢复旧任务。历史 OSS 对象不会自动迁移或删除。
 
 仅支持当前按 Job 隔离的对象格式。旧格式任务直接清理，不提供恢复或迁移；当前格式任务仍支持中断恢复。
 
@@ -622,7 +622,7 @@ RFC-01 要求保存的是会话完成后的 workspace；当前实现只能在用
 - 假 API/OSS 端到端：授权前仅读取轨迹元数据，不读 workspace 内容、不上传；授权后仅上传允许内容。
 - 验证全选、多选、取消全选、搜索、零选中阻止继续和返回修改范围；发现阶段读取候选轨迹元数据后，未选会话不再进入正文采集，其 workspace 不读取文件内容、不打包、不上传。
 - 验证子 agent 随根会话选择、共享 workspace 去重、密钥排除后实际上传清单更新；用户拒绝最终上传时无内容上传，resume 不扩大已确认范围。
-- 验收目标要求 credentials、私钥和 token 不出现在对象或日志；当前 token 因 object_prefix 写入 OSS key/manifest，尚未通过此项验收。另覆盖 401/403/429/5xx 和进程中断恢复。
+- 验收目标要求 credentials、私钥和 token 不出现在对象或日志；新建任务使用 participant ID 前缀，不将认证 token 写入 OSS object key 或 manifest。另覆盖 401/403/429/5xx 和进程中断恢复。
 - 两台应用节点同时接入网关；停止其中一台后验证健康检查摘除、剩余节点继续处理新请求，恢复后验证节点重新加入。
 - 验证请求可在不同应用节点间切换，登记/完成接口幂等，上传对象仍由客户端直传 OSS。
 - Linux、macOS、Windows 各跑至少一条真实文件树 fixture。

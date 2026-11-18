@@ -2,7 +2,7 @@ package core
 
 import "time"
 
-const ManifestSchema = "1.1"
+const ManifestSchema = "1.2"
 const AdapterVersion = "1.2.0"
 const LargeFileRulesVersion = "1.2.0"
 

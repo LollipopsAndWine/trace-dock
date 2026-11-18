@@ -2,10 +2,10 @@ package core
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/klauspost/compress/zstd"
 	"io"
 	"os"
 	"path/filepath"
@@ -246,7 +246,7 @@ func TestCollectionSafetyAndDeterminism(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			z, e := zstd.NewReader(f)
+			z, e := gzip.NewReader(f)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -407,7 +407,7 @@ func TestCollectorSharesWorkspaceAndUsesJobScopedArtifactKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := "trajectory/token=test-token/dt=2026-11-14/job=job-123/"
+	prefix := "trajectory/participant_id=participant-test/dt=2026-11-14/job=job-123/"
 	sessions := make([]*Session, 0, 2)
 	for _, id := range []string{"session-a", "session-b"} {
 		source := filepath.Join(home, id+".jsonl")
@@ -431,7 +431,7 @@ func TestCollectorSharesWorkspaceAndUsesJobScopedArtifactKeys(t *testing.T) {
 				t.Fatalf("unexpected trajectory key: %s", artifact.Key)
 			}
 		case "workspace":
-			if !strings.HasSuffix(artifact.Key, "/workspaces/"+artifact.ID+"/workspace.tar.zst") || !reflect.DeepEqual(artifact.SessionIDs, []string{"session-a", "session-b"}) {
+			if !strings.HasSuffix(artifact.Key, "/workspaces/"+artifact.ID+"/workspace.tar.gz") || !reflect.DeepEqual(artifact.SessionIDs, []string{"session-a", "session-b"}) {
 				t.Fatalf("unexpected shared workspace artifact: %+v", artifact)
 			}
 			for _, session := range manifest.Sessions {

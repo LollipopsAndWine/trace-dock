@@ -21,12 +21,21 @@ type UploadSummary struct {
 type uploadView struct {
 	summary       UploadSummary
 	transferred   int64
+	networkBytes  int64
+	rateSamples   []uploadRateSample
 	started       time.Time
 	updated       time.Time
 	verifyStarted time.Time
 	verifying     bool
 	interrupted   bool
 }
+
+type uploadRateSample struct {
+	at    time.Time
+	bytes int64
+}
+
+const uploadRateWindow = 5 * time.Second
 
 func (u *UI) BeginUpload(summary UploadSummary) {
 	now := time.Now()
@@ -36,17 +45,36 @@ func (u *UI) BeginUpload(summary UploadSummary) {
 	u.result = nil
 	u.info, u.activities, u.activity = nil, nil, ""
 	u.plainScreen = nil
-	u.upload = &uploadView{summary: summary, transferred: summary.UploadedBytes, started: now, updated: now}
+	u.upload = &uploadView{
+		summary: summary, transferred: summary.UploadedBytes, started: now, updated: now,
+		rateSamples: []uploadRateSample{{at: now}},
+	}
 	u.renderBase()
 }
 
-func (u *UI) UploadProgress(transferred int64) {
+func (u *UI) UploadProgress(transferred, networkBytes int64) {
 	if u.upload == nil {
 		return
 	}
-	u.upload.transferred = min(max(u.upload.transferred, transferred), u.upload.summary.TotalBytes)
-	u.upload.updated = time.Now()
+	u.upload.observeProgress(transferred, networkBytes, time.Now())
 	u.renderBase()
+}
+
+func (v *uploadView) observeProgress(transferred, networkBytes int64, now time.Time) {
+	v.transferred = min(max(v.transferred, transferred), v.summary.TotalBytes)
+	v.networkBytes = max(v.networkBytes, networkBytes)
+	v.updated = now
+	v.rateSamples = append(v.rateSamples, uploadRateSample{at: now, bytes: v.networkBytes})
+	cutoff := now.Add(-uploadRateWindow)
+	// Keep the sample just before the window so every interval has an anchor,
+	// even if no callbacks arrived while a part or the network was stalled.
+	first := 0
+	for first+1 < len(v.rateSamples) && !v.rateSamples[first+1].at.After(cutoff) {
+		first++
+	}
+	if first > 0 {
+		v.rateSamples = append(v.rateSamples[:0], v.rateSamples[first:]...)
+	}
 }
 
 func (u *UI) VerifyUpload() {
@@ -77,11 +105,16 @@ func (u *UI) InterruptUpload() {
 }
 
 func (v *uploadView) rate() float64 {
-	elapsed := v.updated.Sub(v.started).Seconds()
+	if len(v.rateSamples) < 2 {
+		return 0
+	}
+	first := v.rateSamples[0]
+	last := v.rateSamples[len(v.rateSamples)-1]
+	elapsed := last.at.Sub(first.at).Seconds()
 	if elapsed < 0.25 {
 		return 0
 	}
-	return float64(v.transferred-v.summary.UploadedBytes) / elapsed
+	return float64(max(0, last.bytes-first.bytes)) / elapsed
 }
 
 func (v *uploadView) progressBar(width int, style func(string, string) string) string {
@@ -111,6 +144,9 @@ func (v *uploadView) stats() string {
 	}
 	rate := v.rate()
 	if rate <= 0 {
+		if v.networkBytes > 0 {
+			return text + "   0.0 MiB/s   剩余时间计算中"
+		}
 		return text + "   -- MiB/s   剩余时间计算中"
 	}
 	remaining := float64(v.summary.TotalBytes-v.transferred) / rate

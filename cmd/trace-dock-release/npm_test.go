@@ -78,7 +78,7 @@ func TestNPMArchivePlatformSelectionAndIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(artifacts) != 8 {
+	if len(artifacts) != len(targets)+3 {
 		t.Fatalf("unexpected npm files: %v", artifacts)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "npm", "publish.json"))
@@ -89,7 +89,7 @@ func TestNPMArchivePlatformSelectionAndIntegrity(t *testing.T) {
 	if err = json.Unmarshal(b, &plan); err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Packages) != 6 || plan.Packages[5].Name != cfg.NPM.Name {
+	if len(plan.Packages) != len(targets)+1 || plan.Packages[len(targets)].Name != cfg.NPM.Name {
 		t.Fatal("native packages must publish before entry package")
 	}
 	main := readNPMPackage(t, filepath.Join(dir, "npm", "trace-dock-cli.tgz"))
@@ -137,6 +137,13 @@ func TestNPMArchivePlatformSelectionAndIntegrity(t *testing.T) {
 		if !bytes.Equal(original, contents["package/bin/trace-dock"+target.Suffix]) {
 			t.Fatal("npm binary bytes changed")
 		}
+	}
+}
+
+func TestNPMTargetIncludesWindowsARM64(t *testing.T) {
+	osName, arch := npmTarget(target{GOOS: "windows", GOARCH: "arm64"})
+	if osName != "win32" || arch != "arm64" {
+		t.Fatalf("Windows ARM64 npm target = %s/%s", osName, arch)
 	}
 }
 

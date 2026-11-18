@@ -96,3 +96,39 @@ func TestUploadReviewBoundsOmittedSessionDetailsForLargeSelections(t *testing.T)
 		t.Fatalf("review printed an unbounded list of excluded sessions: %s", text)
 	}
 }
+
+func TestUploadReviewSummaryIncludesCountsVolumeAndExclusionsTogether(t *testing.T) {
+	m := &core.Manifest{
+		Selection: []string{"one", "two", "three"},
+		Sessions: []*core.Session{
+			{ID: "one", TrajectoryArtifact: "trace-one"},
+			{ID: "two", TrajectoryArtifact: "trace-two"},
+			{ID: "three", SkipReason: "secret_detected"},
+		},
+		Artifacts: []core.Artifact{
+			{ID: "trace-one", Kind: "trajectory", Size: 100},
+			{ID: "trace-two", Kind: "trajectory", Size: 200},
+			{ID: "snapshot-one", Kind: "workspace", Size: 1024},
+			{ID: "snapshot-two", Kind: "workspace", Size: 1024},
+			{ID: "snapshot-three", Kind: "workspace", Size: 1024},
+			{ID: "exclusions", Kind: "exclusions", Size: 10},
+		},
+		Summary: core.Summary{Excluded: 4},
+	}
+	lines := uploadReviewSummaryLines(&ui.UI{}, m, inspectUpload(m, 100), map[string]int{
+		"secret_detected": 1, "large_file_type": 1, "large_file_size": 1,
+	})
+	text := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"上传 2 / 已选 3 份 · 1 份不上传", "上传 3 份（按目录去重）",
+		"预计总量", "体积分项", "敏感信息 1 项 · 大文件 2 项 · 其他 1 项",
+		"文件类型排除 1 项 · 体积超限 1 项", "敏感信息排除 1 份",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("confirmation summary missing %q: %s", want, text)
+		}
+	}
+	if len(lines) > 10 || strings.Contains(text, "…") {
+		t.Fatalf("confirmation summary is not compact: %s", text)
+	}
+}

@@ -32,7 +32,7 @@ type releaseConfig struct {
 	NPM                npmConfig `json:"npm"`
 }
 
-var targets = []target{{"linux", "amd64", ""}, {"linux", "arm64", ""}, {"darwin", "amd64", ""}, {"darwin", "arm64", ""}, {"windows", "amd64", ".exe"}}
+var targets = []target{{"linux", "amd64", ""}, {"linux", "arm64", ""}, {"darwin", "amd64", ""}, {"darwin", "arm64", ""}, {"windows", "amd64", ".exe"}, {"windows", "arm64", ".exe"}}
 var semver = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
 func main() {
@@ -137,23 +137,12 @@ func run(ci bool) error {
 			return fmt.Errorf("package %s/%s: %w", t.GOOS, t.GOARCH, err)
 		}
 	}
-	npmFiles, err := buildNPMPackages(output, cfg)
-	if err != nil {
+	if _, err := buildNPMPackages(output, cfg); err != nil {
 		return fmt.Errorf("package npm: %w", err)
 	}
 	var sums strings.Builder
-	for _, t := range targets {
-		name := "trace-dock-" + t.GOOS + "-" + t.GOARCH + t.Suffix
-		for _, artifact := range append([]string{name, archiveName(t)}, nativeNames(t)...) {
-			digest, err := hashFile(filepath.Join(output, artifact))
-			if err != nil {
-				return err
-			}
-			sums.WriteString(digest + "  " + artifact + "\n")
-		}
-	}
-	for _, artifact := range npmFiles {
-		digest, err := hashFile(filepath.Join(output, filepath.FromSlash(artifact)))
+	for _, artifact := range publicArtifacts() {
+		digest, err := hashFile(filepath.Join(output, artifact))
 		if err != nil {
 			return err
 		}
@@ -268,6 +257,20 @@ func archiveName(t target) string {
 		ext = ".zip"
 	}
 	return "trace-dock-" + t.GOOS + "-" + t.GOARCH + ext
+}
+
+// publicArtifacts lists end-user downloads. npm tarballs and publishing tools
+// remain in the build artifact for the separate npm publication step.
+func publicArtifacts() []string {
+	var artifacts []string
+	for _, t := range targets {
+		artifacts = append(artifacts, archiveName(t))
+		artifacts = append(artifacts, nativeNames(t)...)
+		if t.GOOS == "windows" {
+			artifacts = append(artifacts, "trace-dock-"+t.GOOS+"-"+t.GOARCH+t.Suffix)
+		}
+	}
+	return artifacts
 }
 
 func archiveBinary(output, binary string, t target) error {

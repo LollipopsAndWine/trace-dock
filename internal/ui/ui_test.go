@@ -52,16 +52,6 @@ func TestKeyConsumesMouseWheelEvents(t *testing.T) {
 	}
 }
 
-func TestMouseTrackingIsScopedAndRestored(t *testing.T) {
-	var output strings.Builder
-	u := &UI{Out: &output, TTY: true, ANSI: true}
-	restore := u.enableMouseTracking()
-	restore()
-	if got, want := output.String(), "\x1b[?1000h\x1b[?1006h\x1b[?1006l\x1b[?1000l"; got != want {
-		t.Fatalf("mouse tracking controls = %q, want %q", got, want)
-	}
-}
-
 func TestPlainTerminalProgressDoesNotRepeatStaticScreen(t *testing.T) {
 	var output strings.Builder
 	u := &UI{Out: &output, TTY: true, Color: false}
@@ -251,7 +241,7 @@ func TestAlternateScreenIsScopedToInteractiveANSI(t *testing.T) {
 	u := &UI{Out: &output, TTY: true, ANSI: true}
 	leave := u.enterAlternateScreen()
 	leave()
-	if got := output.String(); got != "\x1b[?1049h\x1b[2J\x1b[H\x1b[?1049l" {
+	if got, want := output.String(), "\x1b[?1007s\x1b[?1006l\x1b[?1000l\x1b[?1049h\x1b[?1007l\x1b[2J\x1b[H\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?1007r"; got != want {
 		t.Fatalf("alternate screen was not entered and restored: %q", got)
 	}
 
@@ -282,6 +272,28 @@ func TestFlowUsesOneAlternateScreenAndLeavesFinalPageVisible(t *testing.T) {
 	leave := strings.Index(got, "\x1b[?1049l")
 	if leave < 0 || !strings.Contains(got[leave:], "Complete") {
 		t.Fatalf("final page was not rendered after leaving alternate screen: %q", got)
+	}
+}
+
+func TestFlowDisablesWheelArrowConversionWithoutCapturingTextSelection(t *testing.T) {
+	var output strings.Builder
+	u := &UI{Out: &output, TTY: true, ANSI: true}
+	u.BeginFlow("Trace Dock")
+	got := output.String()
+	save := strings.Index(got, "\x1b[?1007s")
+	enter := strings.Index(got, "\x1b[?1049h")
+	disable := strings.Index(got, "\x1b[?1007l")
+	if save < 0 || save > enter || disable < enter {
+		t.Fatal("wheel arrow conversion must be saved and disabled for alternate screen menus")
+	}
+	for _, capture := range []string{"\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h"} {
+		if strings.Contains(got, capture) {
+			t.Fatal("mouse reporting prevents native text selection")
+		}
+	}
+	u.EndFlow()
+	if got := output.String(); !strings.HasSuffix(got, "\x1b[?1049l\x1b[?1007r") {
+		t.Fatal("leaving the flow must restore the terminal's prior wheel setting")
 	}
 }
 

@@ -14,6 +14,8 @@ Trace Dock 是一个交互式命令行工具，用来选择 Codex 或 Claude Cod
 npm install -g @pjlab/trace-dock
 ```
 
+支持 Linux x64 / ARM64、macOS Intel / Apple Silicon、Windows x64 / ARM64。npm 安装时不要使用 `--omit=optional`，平台对应的原生程序通过 optional dependencies 安装。
+
 ### 2. 运行
 
 直接运行会进入交互式流程：
@@ -53,6 +55,8 @@ trace-dock --server https://collector.example.com
 | `Enter` | 确认当前选择 |
 | `Ctrl+C` | 取消当前操作 |
 
+最终上传确认页集中显示数量、体积和排除统计，按 `D` 查看项目、会话及排除原因等明细，按 `Enter` 返回确认。明细支持终端滚动查看和鼠标拖选复制。
+
 会话列表中的“normal / abnormal”只描述轨迹是否观察到完成、错误或中断证据，不代表敏感信息检测结果。`abnormal` 会话仍可以选择和上传。
 
 workspace 会根据目录情况显示为：
@@ -60,7 +64,7 @@ workspace 会根据目录情况显示为：
 - `snapshot`：授权后读取符合规则的项目文件并生成快照。
 - `path_only`：只记录 workspace 路径，不读取目录内容。
 
-轨迹和 workspace 都会在本机进行敏感信息检查。命中的文件不会上传，源文件也不会被修改。大文件通常只记录路径，具体排除原因会显示在确认页和结果页。
+workspace 快照使用 `.tar.gz`（tar 归档加 gzip 压缩）后上传 OSS，可用 Linux、macOS 和 Windows 自带的归档工具解压。轨迹和 workspace 都会在本机进行敏感信息检查。命中的文件不会上传，源文件也不会被修改。大文件通常只记录路径，具体排除原因会显示在确认页和结果页。
 
 ## 配置
 
@@ -178,6 +182,16 @@ trace-dock --server https://collector.example.com
 ```
 
 这样配置文件、任务状态和回执都会保存到 `/data/trace-dock`。
+
+上传大文件默认使用 6 个 OSS 分片并发。网络延迟较高或带宽较大时可以临时调整，允许范围为 1–16：
+
+```bash
+TRACE_DOCK_UPLOAD_PARALLEL=10 trace-dock
+```
+
+并发越高，占用的内存和 OSS 连接越多；如果本地 gzip 压缩或服务端限速已经是瓶颈，提高该值不会继续加速。
+
+上传页按最近约 5 秒本次传输的数据计算速度和剩余时间。恢复的分片和已存在的对象会计入总进度，不计入本次网速。
 
 ## 常用命令
 
