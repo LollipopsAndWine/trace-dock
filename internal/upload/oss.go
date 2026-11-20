@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +45,50 @@ type Uploader struct {
 
 const defaultUploadParallel = 6
 
+const credentialRefreshBeforeExpiry = 5 * time.Minute
+
+type renewingCredentialsProvider struct {
+	mu      sync.Mutex
+	current api.Credentials
+	fetch   func(context.Context) (api.Credentials, error)
+	now     func() time.Time
+}
+
+func (p *renewingCredentialsProvider) GetCredentials(ctx context.Context) (credentials.Credentials, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now
+	if p.now != nil {
+		now = p.now
+	}
+	if !p.current.Expiration.After(now().Add(credentialRefreshBeforeExpiry)) {
+		c, err := p.fetch(ctx)
+		if err != nil {
+			return credentials.Credentials{}, err
+		}
+		if !sameCredentialScope(p.current, c) {
+			return credentials.Credentials{}, fmt.Errorf("refreshed OSS credentials changed Job scope")
+		}
+		if !c.Expiration.After(now()) {
+			return credentials.Credentials{}, fmt.Errorf("refreshed OSS credentials are expired")
+		}
+		p.current = c
+	}
+	expires := p.current.Expiration
+	return credentials.Credentials{
+		AccessKeyID:     p.current.AccessKeyID,
+		AccessKeySecret: p.current.AccessKeySecret,
+		SecurityToken:   p.current.SecurityToken,
+		Expires:         &expires,
+	}, nil
+}
+
+func sameCredentialScope(a, b api.Credentials) bool {
+	return a.Endpoint == b.Endpoint && a.Bucket == b.Bucket && a.Prefix == b.Prefix &&
+		a.Region == b.Region && a.PathStyle == b.PathStyle
+}
+
 func uploadParallelism() int {
 	value, err := strconv.Atoi(os.Getenv("TRACE_DOCK_UPLOAD_PARALLEL"))
 	if err == nil && value >= 1 && value <= 16 {
@@ -66,10 +111,34 @@ func (u *Uploader) refresh(ctx context.Context) error {
 	if c.Region == "" {
 		c.Region = "cn-hangzhou"
 	}
+	if c.Expiration.IsZero() || !c.Expiration.After(time.Now()) {
+		return fmt.Errorf("invalid job credential expiration")
+	}
 	if !u.AllowHTTP && !strings.HasPrefix(c.Endpoint, "https://") {
 		return fmt.Errorf("OSS endpoint must use HTTPS")
 	}
-	provider := credentials.NewStaticCredentialsProvider(c.AccessKeyID, c.AccessKeySecret, c.SecurityToken)
+	provider := &renewingCredentialsProvider{
+		current: c,
+		fetch: func(ctx context.Context) (api.Credentials, error) {
+			next, err := u.API.Credentials(ctx, u.JobID)
+			if err != nil {
+				return api.Credentials{}, err
+			}
+			if !strings.HasPrefix(next.Prefix, "trajectory/participant_id=") || !strings.HasSuffix(next.Prefix, "/job="+u.JobID+"/") || next.AccessKeyID == "" || next.AccessKeySecret == "" || next.SecurityToken == "" {
+				return api.Credentials{}, fmt.Errorf("invalid refreshed job credentials")
+			}
+			if next.Region == "" {
+				next.Region = "cn-hangzhou"
+			}
+			if !u.AllowHTTP && !strings.HasPrefix(next.Endpoint, "https://") {
+				return api.Credentials{}, fmt.Errorf("OSS endpoint must use HTTPS")
+			}
+			if !sameCredentialScope(c, next) {
+				return api.Credentials{}, fmt.Errorf("refreshed OSS credentials changed Job scope")
+			}
+			return next, nil
+		},
+	}
 	cfg := oss.LoadDefaultConfig().WithRegion(c.Region).WithEndpoint(c.Endpoint).WithCredentialsProvider(provider).WithConnectTimeout(30 * time.Second).WithReadWriteTimeout(5 * time.Minute).WithUsePathStyle(c.PathStyle)
 	u.client = oss.NewClient(cfg, u.trackNetworkBytes)
 	u.creds = c
